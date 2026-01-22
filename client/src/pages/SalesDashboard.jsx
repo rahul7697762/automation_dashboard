@@ -33,8 +33,19 @@ const SalesDashboard = () => {
 
     useEffect(() => {
         fetchData();
-        const interval = setInterval(fetchData, 30000); // Live update every 30s
-        return () => clearInterval(interval);
+
+        // Subscribe to real-time changes
+        const channel = supabase
+            .channel('public:sales_calls')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_calls' }, (payload) => {
+                console.log('Realtime change received!', payload);
+                fetchData(); // Refresh data on any change
+            })
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
     }, []);
 
     const fetchData = async () => {
