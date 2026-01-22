@@ -4,6 +4,10 @@ import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,11 +16,11 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const API_KEY = 'key_75f00c2702d709b10c3681aef0cc';
+const API_KEY = process.env.RETELL_API_KEY;
 
 // Initialize Supabase client
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://paskzwoegduhzehkxoyu.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBhc2t6d29lZ2R1aHplaGt4b3l1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1NjA0ODksImV4cCI6MjA3NzEzNjQ4OX0.Kyy7bJf1R5MouHNFvOrPbJVYfNADxsciRDXFZZpmd-8';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Endpoint to create a web call
