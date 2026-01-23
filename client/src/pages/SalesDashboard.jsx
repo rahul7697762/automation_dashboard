@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import {
     Phone,
@@ -15,21 +16,39 @@ import {
     MoreVertical,
     Play,
     Volume2,
-    AlertTriangle
+    AlertTriangle,
+    Download,
+    LogOut
 } from 'lucide-react';
 
 import VoiceAgentInterface from '../components/VoiceAgentInterface';
+import ThemeToggle from '../components/ThemeToggle';
+import AiAvatar from '../assets/ai_agent_avatar.png';
 
 const SalesDashboard = () => {
+    const navigate = useNavigate();
     const [currentView, setCurrentView] = useState('overview'); // overview, voice_demo
     const [calls, setCalls] = useState([]);
     const [loading, setLoading] = useState(true);
     const [stats, setStats] = useState({
         totalCalls: 0,
+        totalCallsTrend: 0,
         avgDuration: '0m 0s',
+        avgDurationTrend: 0,
         activeConversations: 0,
-        successRate: '0%'
+        successRate: '0%',
+        successRateTrend: 0,
+        pendingReminders: 0,
+        pendingRemindersTrend: 0
     });
+    const [phoneNumber, setPhoneNumber] = useState('');
+    const [isCalling, setIsCalling] = useState(false);
+    const [isSyncing, setIsSyncing] = useState(false);
+    const [selectedCall, setSelectedCall] = useState(null);
+    const [searchTerm, setSearchTerm] = useState('');
+
+    const [filterType, setFilterType] = useState('all');
+    const [analyticsDate, setAnalyticsDate] = useState(new Date().toISOString().split('T')[0]);
 
     useEffect(() => {
         fetchData();
@@ -40,6 +59,10 @@ const SalesDashboard = () => {
             .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_calls' }, (payload) => {
                 console.log('Realtime change received!', payload);
                 fetchData(); // Refresh data on any change
+            })
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'reminders' }, (payload) => {
+                console.log('Realtime reminder change!', payload);
+                fetchData();
             })
             .subscribe();
 
@@ -57,8 +80,15 @@ const SalesDashboard = () => {
 
             if (error) throw error;
 
+            const { data: remindersData, error: remindersError } = await supabase
+                .from('reminders')
+                .select('*');
+
+            if (error) throw error;
+            if (remindersError) throw remindersError;
+
             setCalls(callsData);
-            calculateStats(callsData);
+            calculateStats(callsData, remindersData || []);
             setLoading(false);
         } catch (error) {
             console.error('Error fetching data:', error);
@@ -66,23 +96,73 @@ const SalesDashboard = () => {
         }
     };
 
-    const calculateStats = (data) => {
-        const total = data.length;
-        const active = data.filter(c => c.status === 'Active').length;
-        const completed = data.filter(c => c.status === 'Completed');
-        const success = completed.length; // Simplified for now
+    const calculateStats = (data, reminders = []) => {
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime();
 
-        // Avg Duration
-        const totalDuration = completed.reduce((acc, curr) => acc + (curr.duration_seconds || 0), 0);
-        const avgSeconds = completed.length ? Math.floor(totalDuration / completed.length) : 0;
-        const avgMin = Math.floor(avgSeconds / 60);
-        const avgSec = avgSeconds % 60;
+        // Filter calls for Today and Yesterday
+        const todayCalls = data.filter(c => new Date(c.created_at).getTime() >= startOfToday);
+        const yesterdayCalls = data.filter(c => {
+            const time = new Date(c.created_at).getTime();
+            return time >= startOfYesterday && time < startOfToday;
+        });
+
+        const active = data.filter(c => c.status === 'Active').length;
+
+        const getMetrics = (calls) => {
+            const total = calls.length;
+            const completed = calls.filter(c => c.status === 'Completed');
+            // Assuming 'Completed' implies success for this metrics simplified view
+            const success = completed.length;
+            const totalDuration = completed.reduce((acc, curr) => acc + (curr.duration_seconds || 0), 0);
+            const avgSeconds = completed.length ? totalDuration / completed.length : 0;
+            const successRate = total ? (success / total) * 100 : 0;
+            return { total, avgSeconds, successRate };
+        };
+
+        const current = getMetrics(todayCalls);
+        const previous = getMetrics(yesterdayCalls);
+
+        const calculateTrend = (curr, prev) => {
+            if (prev === 0) return curr > 0 ? 100 : 0;
+            return ((curr - prev) / prev) * 100;
+        };
+
+        const totalCallsTrend = calculateTrend(current.total, previous.total);
+        const avgDurationTrend = calculateTrend(current.avgSeconds, previous.avgSeconds);
+        const successRateTrend = calculateTrend(current.successRate, previous.successRate);
+
+        const avgMin = Math.floor(current.avgSeconds / 60);
+        const avgSec = Math.floor(current.avgSeconds % 60);
+
+        // Reminder Stats
+        const todayReminders = reminders.filter(r => r.status === 'pending' && new Date(r.created_at).getTime() >= startOfToday);
+        const yesterdayReminders = reminders.filter(r => {
+            const time = new Date(r.created_at).getTime();
+            return r.status === 'pending' && time >= startOfYesterday && time < startOfToday;
+        });
+
+        // This logic calculates "New Pending Reminders Created" trend. 
+        // If the goal is "Total Pending Reminders Count" snapshot, trend is harder to define without historical snapshots.
+        // Assuming user wants "How many pending reminders were created Today vs Yesterday"
+
+        const currentPending = reminders.filter(r => r.status === 'pending').length;
+        const createdToday = todayReminders.length;
+        const createdYesterday = yesterdayReminders.length;
+
+        const pendingRemindersTrend = calculateTrend(createdToday, createdYesterday);
 
         setStats({
-            totalCalls: total,
+            totalCalls: current.total,
+            totalCallsTrend,
             avgDuration: `${avgMin}m ${avgSec}s`,
+            avgDurationTrend,
             activeConversations: active,
-            successRate: total ? `${((success / total) * 100).toFixed(1)}%` : '0%'
+            successRate: `${current.successRate.toFixed(1)}%`,
+            successRateTrend,
+            pendingReminders: currentPending,
+            pendingRemindersTrend
         });
     };
 
@@ -104,21 +184,124 @@ const SalesDashboard = () => {
         return `${m}m ${s}s`;
     };
 
+    const handlePhoneCall = async () => {
+        if (!phoneNumber) {
+            alert('Please enter a phone number');
+            return;
+        }
+        setIsCalling(true);
+        try {
+            const response = await fetch('http://localhost:3001/api/create-phone-call', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ to_number: phoneNumber })
+            });
+            const data = await response.json();
+            if (data.error) throw new Error(data.error);
+
+            alert('Call initiated to ' + phoneNumber);
+            setPhoneNumber('');
+        } catch (error) {
+            console.error('Phone call failed:', error);
+            alert('Failed to call: ' + error.message);
+        } finally {
+            setIsCalling(false);
+        }
+    };
+
+    const handleSyncCalls = async () => {
+        setIsSyncing(true);
+        try {
+            const response = await fetch('http://localhost:3001/api/sync-calls');
+            const data = await response.json();
+            if (data.error) throw new Error(data.error);
+
+            console.log('Sync result:', data);
+            await fetchData(); // Refresh local list
+        } catch (error) {
+            console.error('Sync failed:', error);
+            alert('Failed to sync calls: ' + error.message);
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+
+    const handleExportCSV = () => {
+        const startOfDay = new Date(analyticsDate).getTime();
+        const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
+
+        const dailyCalls = calls.filter(c => {
+            const time = new Date(c.created_at).getTime();
+            return time >= startOfDay && time < endOfDay;
+        });
+
+        if (dailyCalls.length === 0) {
+            alert('No calls found for this date.');
+            return;
+        }
+
+        const headers = ['Call ID', 'Contact Name', 'Phone Number', 'Direction', 'Type', 'Status', 'Duration (s)', 'Summary', 'Sentiment', 'Date'];
+        const rows = dailyCalls.map(c => {
+            const direction = c.direction?.toLowerCase() || 'outbound';
+            const phoneNumber = direction === 'inbound' ? (c.from_number || c.to_number) : (c.to_number || c.from_number);
+
+            return [
+                c.call_id,
+                c.contact_name || 'Unknown',
+                phoneNumber || 'N/A',
+                c.direction,
+                c.call_type,
+                c.status,
+                c.duration_seconds,
+                `"${(c.call_summary || '').replace(/"/g, '""')}"`,
+                c.user_sentiment,
+                new Date(c.created_at).toLocaleString()
+            ]
+        });
+
+        const csvContent = [
+            headers.join(','),
+            ...rows.map(row => row.join(','))
+        ].join('\n');
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `calls_export_${analyticsDate}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    const filteredCalls = calls.filter(call => {
+        const matchesSearch = searchTerm === '' ||
+            (call.contact_name?.toLowerCase().includes(searchTerm.toLowerCase())) ||
+            (call.call_id?.toLowerCase().includes(searchTerm.toLowerCase()));
+
+        let matchesType = true;
+        if (filterType === 'phone_call') matchesType = call.call_type === 'phone_call';
+        if (filterType === 'web_call') matchesType = call.call_type === 'web_call';
+        if (filterType === 'inbound') matchesType = call.direction === 'inbound';
+        if (filterType === 'outbound') matchesType = call.direction === 'outbound';
+
+        return matchesSearch && matchesType;
+    });
+
     return (
-        <div className="flex h-screen bg-slate-900 text-slate-100 font-sans overflow-hidden">
+        <div className="flex h-screen bg-gray-50 dark:bg-slate-900 text-gray-900 dark:text-slate-100 font-sans overflow-hidden transition-colors duration-300">
             {/* Sidebar */}
-            <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col hidden md:flex">
-                <div className="p-6 flex items-center gap-3">
-                    <div className="bg-green-500 p-2 rounded-lg">
-                        <Mic className="text-white w-6 h-6" />
-                    </div>
-                    <div>
-                        <h1 className="font-bold text-lg tracking-tight">VoiceAgent</h1>
-                        <p className="text-xs text-slate-500">AI Dashboard</p>
-                    </div>
-                </div>
+            <aside className="w-64 bg-white dark:bg-slate-900 border-r border-gray-200 dark:border-slate-800 flex flex-col hidden md:flex transition-colors duration-300">
+
 
                 <nav className="flex-1 px-4 space-y-2 mt-6">
+                    <NavItem
+                        icon={<LogOut size={20} />}
+                        label="Back to Agents"
+                        active={false}
+                        onClick={() => navigate('/agents')}
+                    />
+                    <div className="h-4"></div> {/* Spacer */}
                     <div className="text-xs font-semibold text-slate-500 mb-4 px-4">DASHBOARD</div>
                     <NavItem
                         icon={<LayoutDashboard size={20} />}
@@ -126,29 +309,38 @@ const SalesDashboard = () => {
                         active={currentView === 'overview'}
                         onClick={() => setCurrentView('overview')}
                     />
-                    <NavItem icon={<Users size={20} />} label="Conversations" />
-                    <NavItem icon={<Calendar size={20} />} label="Meetings" />
-                    <NavItem icon={<Bell size={20} />} label="Reminders" />
-                    <NavItem icon={<BarChart size={20} />} label="Analytics" />
+                    <NavItem
+                        icon={<Users size={20} />}
+                        label="Conversations"
+                        active={currentView === 'conversations'}
+                        onClick={() => setCurrentView('conversations')}
+                    />
+                    <NavItem
+                        icon={<BarChart size={20} />}
+                        label="Analytics"
+                        active={currentView === 'analytics'}
+                        onClick={() => setCurrentView('analytics')}
+                    />
 
-                    <div className="text-xs font-semibold text-slate-500 mt-8 mb-4 px-4">SETTINGS</div>
-                    <NavItem icon={<Mic size={20} />} label="Voice Settings" />
-                    <NavItem icon={<Phone size={20} />} label="Call Settings" />
-                    <NavItem icon={<Settings size={20} />} label="System Settings" />
+
                 </nav>
             </aside>
 
             {/* Main Content */}
             <main className="flex-1 flex flex-col overflow-hidden">
                 {/* Header */}
-                <header className="h-16 border-b border-slate-800 flex items-center justify-between px-8 bg-slate-900">
+                <header className="h-16 border-b border-gray-200 dark:border-slate-800 flex items-center justify-between px-8 bg-white dark:bg-slate-900 transition-colors duration-300">
                     <div>
-                        <h2 className="text-xl font-bold">AI Voice Agent Dashboard</h2>
-                        <p className="text-sm text-slate-500">
-                            {currentView === 'overview' ? 'Manage your calls and conversations' : 'Live Voice Agent Demo'}
+                        <h2 className="text-xl font-bold text-gray-900 dark:text-white">AI Voice Agent Dashboard</h2>
+                        <p className="text-sm text-gray-500 dark:text-slate-500">
+                            {currentView === 'overview' && 'Manage your calls and conversations'}
+                            {currentView === 'voice_demo' && 'Live Voice Agent Demo'}
+                            {currentView === 'conversations' && 'Call History & Analytics'}
+                            {currentView === 'analytics' && 'Export & Analyze Daily Performance'}
                         </p>
                     </div>
                     <div className="flex items-center gap-4">
+                        <ThemeToggle />
                         <div className="flex items-center gap-2 text-green-500 bg-green-500/10 px-3 py-1 rounded-full text-xs font-medium">
                             <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
                             System Online
@@ -158,8 +350,189 @@ const SalesDashboard = () => {
 
                 <div className="flex-1 overflow-auto p-8 relative">
                     {currentView === 'voice_demo' ? (
-                        <div className="h-full w-full rounded-2xl overflow-hidden border border-slate-800">
+                        <div className="h-full w-full rounded-2xl overflow-hidden border border-gray-200 dark:border-slate-800 transition-colors duration-300">
                             <VoiceAgentInterface />
+                        </div>
+                    ) : currentView === 'conversations' ? (
+                        <div className="space-y-6">
+                            <div className="flex justify-between items-center">
+                                <div className="space-y-1">
+                                    <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100">All Conversations</h3>
+                                    <p className="text-sm text-gray-500 dark:text-slate-400">Detailed history of all client interactions</p>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={handleSyncCalls}
+                                        disabled={isSyncing}
+                                        className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-white hover:bg-gray-50 dark:hover:bg-slate-700 flex items-center gap-2 px-4 py-2 rounded-xl transition-colors"
+                                    >
+                                        <div className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`}>⟳</div>
+                                        <span className="font-medium">{isSyncing ? 'Syncing...' : 'Sync History'}</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="flex gap-4 mb-4">
+                                <div className="relative flex-1">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-slate-500" size={18} />
+                                    <input
+                                        type="text"
+                                        placeholder="Search by phone or name..."
+                                        value={searchTerm}
+                                        onChange={(e) => setSearchTerm(e.target.value)}
+                                        className="w-full bg-white dark:bg-slate-800/50 border border-gray-200 dark:border-slate-700 rounded-xl pl-10 pr-4 py-2 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:outline-none focus:border-green-500 transition-colors"
+                                    />
+                                </div>
+                                <select
+                                    value={filterType}
+                                    onChange={(e) => setFilterType(e.target.value)}
+                                    className="bg-white dark:bg-slate-800/50 border border-gray-200 dark:border-slate-700 rounded-xl px-4 py-2 text-gray-900 dark:text-slate-200 focus:outline-none focus:border-green-500 transition-colors"
+                                >
+                                    <option value="all">All Types</option>
+                                    <option value="phone_call">Phone Calls</option>
+                                    <option value="web_call">Web Calls</option>
+                                    <option value="inbound">Inbound</option>
+                                    <option value="outbound">Outbound</option>
+                                </select>
+                            </div>
+
+                            <div className="bg-white dark:bg-slate-800/50 rounded-2xl border border-gray-200 dark:border-slate-800 overflow-hidden transition-colors duration-300">
+                                <table className="w-full text-left">
+                                    <thead className="bg-gray-50 dark:bg-slate-800/80 text-gray-500 dark:text-slate-400 text-xs uppercase font-medium border-b border-gray-200 dark:border-slate-700">
+                                        <tr>
+                                            <th className="px-6 py-4">Contact</th>
+                                            <th className="px-6 py-4">Type</th>
+                                            <th className="px-6 py-4">Status</th>
+                                            <th className="px-6 py-4">Duration</th>
+                                            <th className="px-6 py-4">Date & Time</th>
+                                            <th className="px-6 py-4"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-200 dark:divide-slate-800">
+                                        {loading ? (
+                                            <tr><td colSpan="6" className="px-6 py-8 text-center text-slate-500">Loading conversations...</td></tr>
+                                        ) : filteredCalls.length === 0 ? (
+                                            <tr><td colSpan="6" className="px-6 py-8 text-center text-slate-500">No conversations found matching your filters.</td></tr>
+                                        ) : (
+                                            filteredCalls.map((call) => (
+                                                <tr
+                                                    key={call.id}
+                                                    className="hover:bg-gray-50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
+                                                    onClick={() => setSelectedCall(call)}
+                                                >
+                                                    <td className="px-6 py-4">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-slate-700 flex items-center justify-center text-gray-600 dark:text-slate-300 font-bold text-xs">
+                                                                {call.contact_name ? call.contact_name[0] : 'U'}
+                                                            </div>
+                                                            <div>
+                                                                <p className="text-gray-900 dark:text-slate-200 font-medium text-sm">{call.contact_name || 'Unknown'}</p>
+                                                                <p className="text-gray-500 dark:text-slate-500 text-xs">ID: {call.call_id?.slice(0, 8)}...</p>
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <div className="flex items-center gap-2 text-slate-400 text-sm">
+                                                            {call.direction === 'inbound' ? <Users size={16} /> : <Phone size={16} />}
+                                                            <span className="capitalize">{call.call_type?.replace('_', ' ') || 'Web Call'}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-6 py-4">
+                                                        <span className={`px-2 py-1 rounded-md text-xs font-medium ${call.status === 'Completed' ? 'bg-green-500/10 text-green-500' :
+                                                            call.status === 'Active' ? 'bg-blue-500/10 text-blue-500' : 'bg-red-500/10 text-red-500'
+                                                            }`}>
+                                                            {call.status}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-6 py-4 text-slate-400 text-sm font-mono">
+                                                        {formatDuration(call.duration_seconds)}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-slate-400 text-sm">
+                                                        {new Date(call.created_at).toLocaleString()}
+                                                    </td>
+                                                    <td className="px-6 py-4 text-right">
+                                                        <button className="text-slate-500 hover:text-white transition-colors">
+                                                            <MoreVertical size={18} />
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    ) : currentView === 'analytics' ? (
+                        <div className="space-y-6">
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100">Analytics Export</h3>
+                                    <p className="text-sm text-gray-500 dark:text-slate-400">Export call logs and view daily performance.</p>
+                                </div>
+                                <div className="flex items-center gap-4">
+                                    <input
+                                        type="date"
+                                        value={analyticsDate}
+                                        onChange={(e) => setAnalyticsDate(e.target.value)}
+                                        className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-gray-200 rounded-xl px-4 py-2 focus:outline-none focus:border-green-500 transition-colors"
+                                    />
+                                    <button
+                                        onClick={handleExportCSV}
+                                        className="bg-green-600 hover:bg-green-500 text-white flex items-center gap-2 px-4 py-2 rounded-xl transition-colors font-medium"
+                                    >
+                                        <Download size={18} /> Export CSV
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="bg-white dark:bg-slate-800/50 rounded-2xl border border-gray-200 dark:border-slate-800 overflow-hidden transition-colors duration-300">
+                                <div className="p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-800/80">
+                                    <h4 className="font-semibold text-gray-700 dark:text-slate-300">Preview: {analyticsDate}</h4>
+                                </div>
+                                <table className="w-full text-left">
+                                    <thead className="bg-gray-50 dark:bg-slate-800/80 text-gray-500 dark:text-slate-400 text-xs uppercase font-medium border-b border-gray-200 dark:border-slate-700">
+                                        <tr>
+                                            <th className="px-6 py-4">Time</th>
+                                            <th className="px-6 py-4">Contact</th>
+                                            <th className="px-6 py-4">Phone</th>
+                                            <th className="px-6 py-4">Type</th>
+                                            <th className="px-6 py-4">Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-200 dark:divide-slate-800">
+                                        {calls.filter(c => {
+                                            const time = new Date(c.created_at).getTime();
+                                            const start = new Date(analyticsDate).getTime();
+                                            const end = start + 86400000;
+                                            return time >= start && time < end;
+                                        }).length === 0 ? (
+                                            <tr><td colSpan="4" className="px-6 py-8 text-center text-slate-500">No calls recorded for this date.</td></tr>
+                                        ) : (
+                                            calls.filter(c => {
+                                                const time = new Date(c.created_at).getTime();
+                                                const start = new Date(analyticsDate).getTime();
+                                                const end = start + 86400000;
+                                                return time >= start && time < end;
+                                            }).map(call => {
+                                                const direction = call.direction?.toLowerCase() || 'outbound';
+                                                const phoneNumber = direction === 'inbound' ? (call.from_number || call.to_number) : (call.to_number || call.from_number);
+                                                return (
+                                                    <tr key={call.id} className="hover:bg-gray-50 dark:hover:bg-slate-800/30 transition-colors">
+                                                        <td className="px-6 py-4 text-sm text-gray-500 dark:text-slate-400">{new Date(call.created_at).toLocaleTimeString()}</td>
+                                                        <td className="px-6 py-4 text-sm font-medium text-gray-900 dark:text-slate-200">{call.contact_name || 'Unknown'}</td>
+                                                        <td className="px-6 py-4 text-sm text-gray-500 dark:text-slate-400 font-mono">{phoneNumber || 'N/A'}</td>
+                                                        <td className="px-6 py-4 text-sm text-gray-500 dark:text-slate-400 capitalize">{call.direction} {call.call_type?.replace('_', ' ')}</td>
+                                                        <td className="px-6 py-4">
+                                                            <span className={`px-2 py-1 rounded-md text-xs font-medium ${call.status === 'Completed' ? 'bg-green-500/10 text-green-500' : 'bg-slate-700 text-slate-300'
+                                                                }`}>{call.status}</span>
+                                                        </td>
+                                                    </tr>
+                                                )
+                                            })
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     ) : (
                         <>
@@ -168,44 +541,61 @@ const SalesDashboard = () => {
                                 <MetricCard
                                     title="Total Calls Today"
                                     value={stats.totalCalls}
-                                    trend="+12%"
+                                    trend={`${stats.totalCallsTrend > 0 ? '+' : ''}${stats.totalCallsTrend.toFixed(1)}%`}
                                     icon={<Phone className="text-green-500" />}
-                                    trendUp
+                                    trendUp={stats.totalCallsTrend >= 0}
+                                />
+                                <MetricCard
+                                    title="Pending Reminders"
+                                    value={stats.pendingReminders}
+                                    trend={`${stats.pendingRemindersTrend > 0 ? '+' : ''}${stats.pendingRemindersTrend.toFixed(1)}%`}
+                                    icon={<Bell className="text-yellow-500" />}
+                                    trendUp={stats.pendingRemindersTrend >= 0}
                                 />
                                 <MetricCard
                                     title="Average Call Duration"
                                     value={stats.avgDuration}
-                                    trend="+5%"
+                                    trend={`${stats.avgDurationTrend > 0 ? '+' : ''}${stats.avgDurationTrend.toFixed(1)}%`}
                                     icon={<Clock className="text-blue-500" />}
-                                    trendUp
+                                    trendUp={stats.avgDurationTrend >= 0}
                                 />
                                 <MetricCard
                                     title="Active Conversations"
                                     value={stats.activeConversations}
-                                    trend="+8%"
+                                    trend="Live"
                                     icon={<Users className="text-purple-500" />}
-                                    trendUp
+                                    trendUp={true}
                                 />
                                 <MetricCard
                                     title="Success Rate"
                                     value={stats.successRate}
-                                    trend="+2.1%"
+                                    trend={`${stats.successRateTrend > 0 ? '+' : ''}${stats.successRateTrend.toFixed(1)}%`}
                                     icon={<CheckCircle className="text-emerald-500" />}
-                                    trendUp
+                                    trendUp={stats.successRateTrend >= 0}
                                 />
                             </div>
 
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                                 {/* Recent Calls List */}
-                                <div className="lg:col-span-2 bg-slate-800/50 rounded-2xl p-6 border border-slate-800">
+                                <div className="lg:col-span-2 bg-white dark:bg-slate-800/50 rounded-2xl p-6 border border-gray-200 dark:border-slate-800 transition-colors duration-300">
                                     <div className="flex justify-between items-center mb-6">
                                         <div>
                                             <h3 className="text-lg font-bold">Recent Calls</h3>
                                             <p className="text-sm text-slate-500">Latest voice agent interactions</p>
                                         </div>
-                                        <button className="text-slate-400 hover:text-white">
-                                            <MoreVertical size={20} />
-                                        </button>
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={handleSyncCalls}
+                                                disabled={isSyncing}
+                                                className="text-slate-400 hover:text-white flex items-center gap-2 px-3 py-1 rounded-lg hover:bg-slate-800 transition-colors"
+                                            >
+                                                <div className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`}>⟳</div>
+                                                <span className="text-sm font-medium">{isSyncing ? 'Syncing...' : 'Sync Calls'}</span>
+                                            </button>
+                                            <button className="text-slate-400 hover:text-white">
+                                                <MoreVertical size={20} />
+                                            </button>
+                                        </div>
                                     </div>
 
                                     <div className="space-y-4">
@@ -228,74 +618,197 @@ const SalesDashboard = () => {
                                 </div>
 
                                 {/* Voice Agent Status Panel */}
-                                <div className="bg-slate-800/50 rounded-2xl p-6 border border-slate-800 h-fit">
-                                    <h3 className="text-lg font-bold mb-1">Voice Agent Status</h3>
-                                    <p className="text-sm text-slate-500 mb-6">Current system status and controls</p>
-
-                                    <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4 mb-6 flex justify-between items-center">
-                                        <div>
-                                            <div className="font-semibold text-green-500">System Status</div>
-                                            <div className="text-xs text-green-400/80">All systems operational</div>
-                                        </div>
-                                        <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                                <div className="bg-white dark:bg-slate-800/50 rounded-2xl p-6 border border-gray-200 dark:border-slate-800 h-fit flex flex-col items-center text-center transition-colors duration-300">
+                                    <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-green-500/20 shadow-[0_0_20px_rgba(16,185,129,0.2)] mb-6 relative">
+                                        <div className="absolute inset-0 bg-gradient-to-tr from-gray-900/0 dark:from-slate-900/0 to-gray-900/30 dark:to-slate-900/30 z-10"></div>
+                                        <img
+                                            src={AiAvatar}
+                                            alt="AI Voice Agent"
+                                            className="w-full h-full object-cover"
+                                        />
+                                        <div className="absolute bottom-2 right-2 w-4 h-4 rounded-full bg-green-500 border-2 border-slate-800 z-20 animate-pulse"></div>
                                     </div>
 
-                                    <div className="space-y-4 mb-8">
-                                        <div className="flex justify-between text-sm">
-                                            <span className="text-slate-400">Voice Quality</span>
-                                            <span className="font-medium">High</span>
-                                        </div>
-                                        <div className="flex justify-between text-sm">
-                                            <span className="text-slate-400">Response Time</span>
-                                            <span className="font-medium">&lt; 200ms</span>
-                                        </div>
-                                        <div className="flex justify-between text-sm">
-                                            <span className="text-slate-400">Active Channels</span>
-                                            <span className="font-medium">5/10</span>
-                                        </div>
+                                    <h3 className="text-xl font-bold text-gray-900 dark:text-slate-100 mb-1">AI Agent Active</h3>
+                                    <p className="text-sm text-gray-500 dark:text-slate-400 mb-6">Ready to handle your calls</p>
+
+                                    <div className="w-full space-y-3 mb-6">
+                                        <input
+                                            type="tel"
+                                            placeholder="+91 98765 43210"
+                                            value={phoneNumber}
+                                            onChange={(e) => setPhoneNumber(e.target.value)}
+                                            className="w-full bg-gray-50 dark:bg-slate-900/50 border border-gray-200 dark:border-slate-700 rounded-xl px-4 py-3 text-gray-900 dark:text-slate-200 placeholder-gray-400 dark:placeholder-slate-500 focus:outline-none focus:border-green-500 transition-colors text-center text-sm"
+                                        />
+                                        <button
+                                            onClick={handlePhoneCall}
+                                            disabled={isCalling}
+                                            className="w-full bg-green-600 hover:bg-green-500 text-white font-medium py-3 rounded-xl flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {isCalling ? (
+                                                <span className="animate-spin">⟳</span>
+                                            ) : (
+                                                <Phone size={18} fill="currentColor" />
+                                            )}
+                                            {isCalling ? 'Calling...' : 'Call Now'}
+                                        </button>
                                     </div>
+
+                                    <div className="w-full h-px bg-gray-200 dark:bg-slate-700/50 mb-6"></div>
 
                                     <button
                                         onClick={() => setCurrentView('voice_demo')}
-                                        className="w-full bg-green-600 hover:bg-green-500 text-white font-medium py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"
+                                        className="w-full bg-gray-100 dark:bg-slate-700 hover:bg-gray-200 dark:hover:bg-slate-600 text-gray-600 dark:text-slate-300 font-medium py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"
                                     >
-                                        <Play size={18} fill="currentColor" /> Start Voice Agent
+                                        <Play size={18} fill="currentColor" /> Open Voice Interface
                                     </button>
 
-                                    <div className="mt-8 bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4">
-                                        <div className="flex gap-3">
-                                            <AlertTriangle className="text-yellow-500 w-5 h-5 shrink-0" />
-                                            <div>
-                                                <div className="text-sm font-semibold text-yellow-500 mb-1">Reminder</div>
-                                                <div className="text-xs text-yellow-500/80">3 pending acknowledgments require review</div>
-                                            </div>
-                                        </div>
-                                    </div>
+
                                 </div>
                             </div>
                         </>
                     )}
                 </div>
-            </main>
-        </div>
+
+                {/* Call Details Modal */}
+                {selectedCall && (
+                    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setSelectedCall(null)}>
+                        <div className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl transition-colors duration-300" onClick={e => e.stopPropagation()}>
+                            <div className="p-6 border-b border-gray-200 dark:border-slate-800 flex justify-between items-center bg-gray-50 dark:bg-slate-800/50 transition-colors duration-300">
+                                <div className="flex items-center gap-4">
+                                    <div className="w-12 h-12 rounded-full bg-gray-200 dark:bg-slate-700 flex items-center justify-center text-gray-600 dark:text-slate-300 font-bold text-lg">
+                                        {selectedCall.contact_name ? selectedCall.contact_name[0] : 'U'}
+                                    </div>
+                                    <div>
+                                        <h3 className="text-xl font-bold text-gray-900 dark:text-white">{selectedCall.contact_name || 'Unknown User'}</h3>
+                                        {selectedCall.from_number && selectedCall.direction === 'inbound' && (
+                                            <p className="text-sm text-green-600 dark:text-green-400 font-mono mb-1">From: {selectedCall.from_number}</p>
+                                        )}
+                                        {selectedCall.to_number && selectedCall.direction === 'outbound' && (
+                                            <p className="text-sm text-blue-600 dark:text-blue-400 font-mono mb-1">To: {selectedCall.to_number}</p>
+                                        )}
+                                        <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-slate-400">
+                                            <span className="flex items-center gap-1"><Clock size={14} /> {formatDuration(selectedCall.duration_seconds)}</span>
+                                            <span>•</span>
+                                            <span>{new Date(selectedCall.created_at).toLocaleString()}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    {(selectedCall.from_number || selectedCall.to_number) && (
+                                        <button
+                                            onClick={() => {
+                                                const numberToCall = selectedCall.direction === 'inbound' ? selectedCall.from_number : selectedCall.to_number;
+                                                setPhoneNumber(numberToCall);
+                                                setSelectedCall(null);
+                                                setCurrentView('voice_demo');
+                                            }}
+                                            className="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-xl flex items-center gap-2 transition-colors font-medium text-sm"
+                                        >
+                                            <Phone size={16} fill="currentColor" /> Call Back
+                                        </button>
+                                    )}
+                                    <button onClick={() => setSelectedCall(null)} className="text-gray-400 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white p-2 rounded-full hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="flex-1 overflow-auto p-6 space-y-6">
+                                {/* Summary & Sentiment */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="bg-white dark:bg-slate-800/50 p-4 rounded-xl border border-gray-200 dark:border-slate-800 shadow-sm transition-colors duration-300">
+                                        <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 mb-2 uppercase tracking-wider">Summary</h4>
+                                        <p className="text-gray-700 dark:text-slate-300 leading-relaxed text-sm">
+                                            {selectedCall.call_summary || 'No summary available for this call.'}
+                                        </p>
+                                    </div>
+                                    <div className="space-y-4">
+                                        <div className="bg-white dark:bg-slate-800/50 p-4 rounded-xl border border-gray-200 dark:border-slate-800 flex justify-between items-center shadow-sm transition-colors duration-300">
+                                            <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider">Sentiment</h4>
+                                            <span className={`px-3 py-1 rounded-full text-sm font-medium ${selectedCall.user_sentiment === 'Positive' ? 'bg-green-100 dark:bg-green-500/10 text-green-600 dark:text-green-500 border border-green-200 dark:border-green-500/20' :
+                                                selectedCall.user_sentiment === 'Negative' ? 'bg-red-100 dark:bg-red-500/10 text-red-600 dark:text-red-500 border border-red-200 dark:border-red-500/20' :
+                                                    'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300'
+                                                }`}>
+                                                {selectedCall.user_sentiment || 'Neutral'}
+                                            </span>
+                                        </div>
+                                        <div className="bg-white dark:bg-slate-800/50 p-4 rounded-xl border border-gray-200 dark:border-slate-800 flex justify-between items-center shadow-sm transition-colors duration-300">
+                                            <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider">Outcome</h4>
+                                            <span className={`px-3 py-1 rounded-full text-sm font-medium ${selectedCall.call_successful ? 'bg-green-100 dark:bg-green-500/10 text-green-600 dark:text-green-500 border border-green-200 dark:border-green-500/20' : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300'
+                                                }`}>
+                                                {selectedCall.call_successful ? 'Successful' : 'Standard'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Audio Player */}
+                                {selectedCall.recording_url && (
+                                    <div className="bg-white dark:bg-slate-800/50 p-4 rounded-xl border border-gray-200 dark:border-slate-800 shadow-sm transition-colors duration-300">
+                                        <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 mb-3 uppercase tracking-wider flex items-center gap-2">
+                                            <Volume2 size={16} /> Call Recording
+                                        </h4>
+                                        <audio controls className="w-full h-8" src={selectedCall.recording_url}>
+                                            Your browser does not support the audio element.
+                                        </audio>
+                                    </div>
+                                )}
+
+                                {/* Transcript */}
+                                <div className="bg-white dark:bg-slate-800/50 p-4 rounded-xl border border-gray-200 dark:border-slate-800 shadow-sm transition-colors duration-300">
+                                    <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 mb-3 uppercase tracking-wider">Transcript</h4>
+                                    <div className="space-y-4 text-sm max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                                        {selectedCall.transcript ? (
+                                            selectedCall.transcript.split('\n').map((line, i) => {
+                                                const isAgent = line.toLowerCase().startsWith('agent:');
+                                                return (
+                                                    <div key={i} className={`flex gap-3 ${isAgent ? 'flex-row' : 'flex-row-reverse'}`}>
+                                                        <div className={`p-3 rounded-2xl max-w-[80%] ${isAgent ? 'bg-gray-100 dark:bg-slate-700/50 text-gray-800 dark:text-slate-200 rounded-tl-none' : 'bg-green-600/10 dark:bg-green-600/20 text-green-800 dark:text-green-100 rounded-tr-none border border-green-500/20'
+                                                            }`}>
+                                                            <p>{line.replace(/^(Agent:|User:)/i, '').trim()}</p>
+                                                        </div>
+                                                    </div>
+                                                )
+                                            })
+                                        ) : (
+                                            <div className="text-gray-400 dark:text-slate-500 italic text-center py-4">Transcript not available.</div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="p-4 border-t border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-800/50 flex justify-end transition-colors duration-300">
+                                <button
+                                    onClick={() => setSelectedCall(null)}
+                                    className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors font-medium text-sm"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div >
+                )}
+            </main >
+        </div >
     );
 };
 
 const NavItem = ({ icon, label, active, onClick }) => (
-    <div onClick={onClick} className={`flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer transition-colors ${active ? 'bg-green-500/10 text-green-500' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}>
+    <div onClick={onClick} className={`flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer transition-colors ${active ? 'bg-green-500/10 text-green-500' : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800 hover:text-gray-900 dark:hover:text-slate-200'}`}>
         {icon}
         <span className="font-medium text-sm">{label}</span>
     </div>
 );
 
 const MetricCard = ({ title, value, trend, icon, trendUp }) => (
-    <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-800 relative overflow-hidden group hover:border-slate-700 transition-all">
+    <div className="bg-white dark:bg-slate-800/50 p-6 rounded-2xl border border-gray-200 dark:border-slate-800 relative overflow-hidden group hover:border-gray-300 dark:hover:border-slate-700 transition-all transition-colors duration-300">
         <div className="flex justify-between items-start mb-4">
             <div>
-                <p className="text-slate-400 text-sm font-medium">{title}</p>
-                <h3 className="text-3xl font-bold mt-1 text-slate-100">{value}</h3>
+                <p className="text-gray-500 dark:text-slate-400 text-sm font-medium">{title}</p>
+                <h3 className="text-3xl font-bold mt-1 text-gray-900 dark:text-slate-100">{value}</h3>
             </div>
-            <div className="p-3 bg-slate-800 rounded-xl group-hover:scale-110 transition-transform">
+            <div className="p-3 bg-gray-100 dark:bg-slate-800 rounded-xl group-hover:scale-110 transition-transform">
                 {icon}
             </div>
         </div>
@@ -316,21 +829,21 @@ const CallItem = ({ name, duration, status, timeAgo }) => {
     };
 
     return (
-        <div className="bg-slate-900/50 p-4 rounded-xl flex items-center justify-between border border-slate-800 hover:border-slate-700 transition-colors">
+        <div className="bg-white dark:bg-slate-900/50 p-4 rounded-xl flex items-center justify-between border border-gray-200 dark:border-slate-800 hover:border-gray-300 dark:hover:border-slate-700 transition-colors duration-300">
             <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-slate-300 font-bold">
+                <div className="w-10 h-10 rounded-full bg-gray-100 dark:bg-slate-700 flex items-center justify-center text-gray-600 dark:text-slate-300 font-bold">
                     {name.split(' ').map(n => n[0]).join('')}
                 </div>
                 <div>
-                    <div className="font-semibold text-slate-200">{name}</div>
-                    <div className="text-xs text-slate-500">Duration: {duration}</div>
+                    <div className="font-semibold text-gray-900 dark:text-slate-200">{name}</div>
+                    <div className="text-xs text-gray-500 dark:text-slate-500">Duration: {duration}</div>
                 </div>
             </div>
             <div className="flex items-center gap-4">
                 <div className={`px-3 py-1 rounded-full text-xs font-medium border ${getStatusColor(status)}`}>
                     {status}
                 </div>
-                <div className="text-xs text-slate-500 w-24 text-right">
+                <div className="text-xs text-gray-400 dark:text-slate-500 w-24 text-right">
                     {timeAgo}
                 </div>
             </div>

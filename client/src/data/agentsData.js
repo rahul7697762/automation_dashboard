@@ -48,16 +48,16 @@ export const agents = [
     status: "Coming Soon"
   },
   {
-    icon: "📊",
-    title: "Analytics Dashboard AI",
-    description: "Real-time data insights and automated reporting.",
+    icon: "🎙️",
+    title: "AI Voice Agent",
+    description: "Automated phone calls and voice interactions with real-time analytics.",
     features: [
-      "Data aggregation",
-      "Custom reports",
-      "Predictive analytics",
-      "ROI tracking"
+      "Inbound/Outbound calls",
+      "Real-time transcription",
+      "Sentiment analysis",
+      "Call recording & logs"
     ],
-    status: "Beta"
+    status: "Available"
   },
   {
     icon: "🔒",

@@ -11,7 +11,7 @@ const AgentsPage = ({ onAgentSelect }) => {
     };
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-50">
+        <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-50 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900 transition-colors duration-300">
             {/* Header Section */}
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-32 pb-16">
                 <div className="text-center mb-16">
@@ -25,15 +25,15 @@ const AgentsPage = ({ onAgentSelect }) => {
                     </div>
 
                     {/* Title */}
-                    <h1 className="text-5xl md:text-6xl font-extrabold text-gray-900 mb-6 leading-tight">
+                    <h1 className="text-5xl md:text-6xl font-extrabold text-gray-900 dark:text-white mb-6 leading-tight">
                         AI Agents
-                        <span className="block text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">
+                        <span className="block text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400">
                             Portfolio
                         </span>
                     </h1>
 
                     {/* Subtitle */}
-                    <p className="text-xl text-gray-600 max-w-3xl mx-auto leading-relaxed">
+                    <p className="text-xl text-gray-600 dark:text-gray-400 max-w-3xl mx-auto leading-relaxed">
                         Powerful AI-driven automation agents designed to streamline your marketing,
                         content creation, and analytics workflows. Deploy intelligent solutions that work 24/7.
                     </p>
@@ -41,22 +41,22 @@ const AgentsPage = ({ onAgentSelect }) => {
                     {/* Stats */}
                     <div className="flex justify-center gap-12 mt-12">
                         <div className="text-center">
-                            <div className="text-4xl font-bold text-indigo-600">
+                            <div className="text-4xl font-bold text-indigo-600 dark:text-indigo-400">
                                 {agents.length}
                             </div>
-                            <div className="text-sm text-gray-500 mt-1">AI Agents</div>
+                            <div className="text-sm text-gray-500 dark:text-gray-400 mt-1">AI Agents</div>
                         </div>
                         <div className="text-center">
-                            <div className="text-4xl font-bold text-purple-600">
+                            <div className="text-4xl font-bold text-purple-600 dark:text-purple-400">
                                 {agents.filter(a => a.status === 'Available').length}
                             </div>
-                            <div className="text-sm text-gray-500 mt-1">Available Now</div>
+                            <div className="text-sm text-gray-500 dark:text-gray-400 mt-1">Available Now</div>
                         </div>
                         <div className="text-center">
-                            <div className="text-4xl font-bold text-yellow-600">
+                            <div className="text-4xl font-bold text-yellow-600 dark:text-yellow-400">
                                 {agents.filter(a => a.status === 'Coming Soon').length}
                             </div>
-                            <div className="text-sm text-gray-500 mt-1">Coming Soon</div>
+                            <div className="text-sm text-gray-500 dark:text-gray-400 mt-1">Coming Soon</div>
                         </div>
                     </div>
                 </div>

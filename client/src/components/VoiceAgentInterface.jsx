@@ -6,6 +6,8 @@ const VoiceAgentInterface = () => {
     const [status, setStatus] = useState('idle'); // idle, connecting, active, cleaning
     const [duration, setDuration] = useState(0);
     const [volume, setVolume] = useState([20, 20, 20, 20, 20]);
+    const [phoneNumber, setPhoneNumber] = useState('');
+    const [callType, setCallType] = useState('web'); // 'web' or 'phone'
     const retellWebClient = useRef(null);
 
     // Initialize Client
@@ -25,7 +27,7 @@ const VoiceAgentInterface = () => {
         });
 
         retellWebClient.current.on('error', (error) => {
-            console.error('Retell Error:', error);
+            console.error('Voice Agent Error:', error);
             setStatus('idle');
             alert('Error connecting to voice agent: ' + error.message);
         });
@@ -61,10 +63,38 @@ const VoiceAgentInterface = () => {
     const handleCallToggle = async () => {
         if (status === 'idle') {
             setStatus('connecting');
+            if (callType === 'phone') {
+                if (!phoneNumber) {
+                    alert('Please enter a phone number');
+                    setStatus('idle');
+                    return;
+                }
+                try {
+                    const response = await fetch('http://localhost:3001/api/create-phone-call', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ to_number: phoneNumber })
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+
+                    alert('Call initiated to ' + phoneNumber);
+                    setStatus('active'); // Manually set active for UI feedback, though real status depends on phone pickup
+                    // In a real app, we'd poll for status or use websockets
+                } catch (error) {
+                    console.error('Phone call failed:', error);
+                    setStatus('idle');
+                    alert('Failed to call: ' + error.message);
+                }
+                return;
+            }
+
             try {
                 // 1. Fetch params from our local backend
                 const response = await fetch('http://localhost:3001/api/create-web-call', {
                     method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_phone: phoneNumber })
                 });
                 const data = await response.json();
 
@@ -82,9 +112,11 @@ const VoiceAgentInterface = () => {
             }
         } else {
             // Hangup
-            if (retellWebClient.current) {
+            if (callType === 'web' && retellWebClient.current) {
                 retellWebClient.current.stopCall();
             }
+            // For phone calls, we can't hang up out-of-band easily without another API endpoint, 
+            // so we just reset UI for now.
             setStatus('idle');
             setDuration(0);
         }
@@ -119,8 +151,8 @@ const VoiceAgentInterface = () => {
                 {/* Avatar / Visualizer Circle */}
                 <div className="relative">
                     <div className={`w-48 h-48 rounded-full flex items-center justify-center border-4 transition-all duration-500 ${status === 'active'
-                            ? 'border-green-500/50 bg-green-500/5 shadow-[0_0_50px_rgba(34,197,94,0.3)]'
-                            : 'border-slate-700 bg-slate-800'
+                        ? 'border-green-500/50 bg-green-500/5 shadow-[0_0_50px_rgba(34,197,94,0.3)]'
+                        : 'border-slate-700 bg-slate-800'
                         }`}>
                         {status === 'active' ? (
                             <div className="flex items-center gap-1 h-12">
@@ -152,6 +184,34 @@ const VoiceAgentInterface = () => {
                     {formatTime(duration)}
                 </div>
 
+                {/* Call Type Selector & Input */}
+                {status === 'idle' && (
+                    <div className="flex flex-col items-center gap-4 w-full max-w-xs">
+                        <div className="flex bg-slate-800 p-1 rounded-lg">
+                            <button
+                                onClick={() => setCallType('web')}
+                                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${callType === 'web' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+                            >
+                                Web Call
+                            </button>
+                            <button
+                                onClick={() => setCallType('phone')}
+                                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${callType === 'phone' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+                            >
+                                Phone Call
+                            </button>
+                        </div>
+
+                        <input
+                            type="tel"
+                            placeholder={callType === 'web' ? "Enter your number (Optional)" : "+91 98765 43210"}
+                            value={phoneNumber}
+                            onChange={(e) => setPhoneNumber(e.target.value)}
+                            className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-green-500 transition-colors text-center"
+                        />
+                    </div>
+                )}
+
                 {/* Controls */}
                 <div className="flex items-center gap-6">
                     <button className="p-4 rounded-full bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white transition-colors">
@@ -162,10 +222,10 @@ const VoiceAgentInterface = () => {
                         onClick={handleCallToggle}
                         disabled={status === 'connecting'}
                         className={`p-6 rounded-full transition-all duration-300 transform hover:scale-105 shadow-xl ${status === 'active'
-                                ? 'bg-red-500 hover:bg-red-600'
-                                : status === 'connecting'
-                                    ? 'bg-slate-600 cursor-not-allowed'
-                                    : 'bg-green-500 hover:bg-green-600'
+                            ? 'bg-red-500 hover:bg-red-600'
+                            : status === 'connecting'
+                                ? 'bg-slate-600 cursor-not-allowed'
+                                : 'bg-green-500 hover:bg-green-600'
                             }`}
                     >
                         {status === 'idle' ? (
@@ -186,7 +246,7 @@ const VoiceAgentInterface = () => {
                 <div className="text-center max-w-sm">
                     <p className="text-slate-500 text-sm">
                         {status === 'idle'
-                            ? "Click the microphone to start a live conversation with the Retell AI sales agent."
+                            ? "Click the microphone to start a live conversation with the AI sales agent."
                             : "Microphone active. Speak naturally to the agent."}
                     </p>
                 </div>
