@@ -26,6 +26,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 // Endpoint to create a web call
 app.post('/api/create-web-call', async (req, res) => {
     try {
+        const { user_phone } = req.body;
         // 1. Get the list of agents
         console.log('Fetching agents from Retell AI...');
         const agentsResponse = await fetch('https://api.retellai.com/list-agents', {
@@ -77,6 +78,9 @@ app.post('/api/create-web-call', async (req, res) => {
             },
             body: JSON.stringify({
                 agent_id: agentId,
+                metadata: {
+                    user_phone: user_phone
+                }
             }),
         });
 
@@ -109,6 +113,91 @@ app.post('/api/create-web-call', async (req, res) => {
 
     } catch (error) {
         console.error('Error creating web call:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Endpoint to create a phone call
+app.post('/api/create-phone-call', async (req, res) => {
+    try {
+        const { to_number } = req.body;
+
+        if (!to_number) {
+            return res.status(400).json({ error: 'To number is required' });
+        }
+
+        // 1. Get the list of agents to find the specific one
+        console.log('Fetching agents from Retell AI...');
+        const agentsResponse = await fetch('https://api.retellai.com/list-agents', {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${API_KEY}`,
+            },
+        });
+
+        if (!agentsResponse.ok) throw new Error('Failed to fetch agents');
+        const agents = await agentsResponse.json();
+
+        // 2. Find "Conversation Flow Agent" or default to first
+        let agent = agents.find(a => a.agent_name === 'Conversation Flow Agent');
+        if (!agent && agents.length > 0) {
+            console.log('Specific agent not found, using first available.');
+            agent = agents[0];
+        }
+
+        if (!agent) {
+            return res.status(404).json({ error: 'No agents found.' });
+        }
+
+        console.log(`Selected Agent: ${agent.agent_name} (${agent.agent_id})`);
+
+        // 3. Get the list of phone numbers
+        console.log('Fetching phone numbers from Retell AI...');
+        const numbersResponse = await fetch('https://api.retellai.com/list-phone-numbers', {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${API_KEY}`,
+            },
+        });
+
+        if (!numbersResponse.ok) throw new Error('Failed to fetch phone numbers');
+        const numbers = await numbersResponse.json();
+
+        // 4. Select a valid number (assuming first one is valid for outbound)
+        if (!numbers || numbers.length === 0) {
+            return res.status(404).json({ error: 'No phone numbers found in Retell account.' });
+        }
+
+        const fromNumber = numbers[0].phone_number;
+        console.log(`Using From Number: ${fromNumber}`);
+
+        // 5. Create the phone call
+        console.log(`Initiating phone call to ${to_number}...`);
+        const callResponse = await fetch('https://api.retellai.com/v2/create-phone-call', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                from_number: fromNumber,
+                to_number: to_number,
+                agent_id: agent.agent_id,
+            }),
+        });
+
+        if (!callResponse.ok) {
+            const errorText = await callResponse.text();
+            throw new Error(`Failed to create call: ${callResponse.status} ${errorText}`);
+        }
+
+        const callData = await callResponse.json();
+        console.log('Phone call created successfully:', callData.call_id);
+
+        res.json(callData);
+
+    } catch (error) {
+        console.error('Error creating phone call:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -174,22 +263,133 @@ app.post('/api/webhook/retell', async (req, res) => {
     }
 });
 
+
+
+// Endpoint to sync calls from Retell
+app.get('/api/sync-calls', async (req, res) => {
+    try {
+        console.log('Syncing calls from Retell AI...');
+
+        // 1. Fetch calls from Retell
+        const response = await fetch('https://api.retellai.com/v2/list-calls', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                limit: 50,
+                sort_order: 'descending'
+            }),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Failed to fetch calls from Retell: ${response.status} ${errorText}`);
+        }
+
+        const calls = await response.json();
+        console.log(`Fetched ${calls.length} calls from Retell.`);
+
+        // 2. Upsert into Supabase
+        let syncedCount = 0;
+        let errors = 0;
+
+        for (const call of calls) {
+            try {
+                const durationMs = call.end_timestamp && call.start_timestamp ? call.end_timestamp - call.start_timestamp : 0;
+                const durationSeconds = Math.floor(durationMs / 1000);
+
+                // Determine Contact Name based on call type and direction
+                let contactName = 'Web User';
+                if (call.call_type === 'phone_call') {
+                    if (call.direction === 'inbound') {
+                        contactName = call.from_number || 'Unknown Caller';
+                    } else if (call.direction === 'outbound') {
+                        contactName = call.to_number || 'Unknown Number';
+                    }
+                }
+
+                const { error } = await supabase
+                    .from('sales_calls')
+                    .upsert({
+                        call_id: call.call_id,
+                        agent_id: call.agent_id,
+                        contact_name: contactName,
+                        status: call.call_status === 'ended' ? 'Completed' : 'Active', // Map status roughly
+                        duration_seconds: durationSeconds,
+                        transcript: call.transcript || null,
+                        recording_url: call.recording_url || null,
+                        disconnection_reason: call.disconnection_reason || null,
+                        call_summary: call.call_analysis?.call_summary || null,
+                        user_sentiment: call.call_analysis?.user_sentiment || null,
+                        call_successful: call.call_analysis?.call_successful || false,
+                        direction: call.direction || null,
+                        call_type: call.call_type || null,
+                        from_number: call.from_number || null,
+                        to_number: call.to_number || null,
+                        created_at: new Date(call.start_timestamp).toISOString()
+                    }, { onConflict: 'call_id' });
+
+                if (error) {
+                    console.error(`Error syncing call ${call.call_id}:`, error);
+                    errors++;
+                } else {
+                    syncedCount++;
+                }
+
+            } catch (err) {
+                console.error(`Exception processing call ${call.call_id}:`, err);
+                errors++;
+            }
+        }
+
+        console.log(`Sync complete. Synced: ${syncedCount}, Errors: ${errors}`);
+        res.json({ success: true, count: syncedCount, errors });
+
+    } catch (error) {
+        console.error('Error syncing calls:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Helper function to handle call_started event
 async function handleCallStarted(call) {
     try {
         console.log(`Call started: ${call.call_id}`);
+
+        // Determine Contact Name
+        let contactName = 'Web Call User';
+        let fromNumber = call.from_number || null;
+
+        if (call.call_type === 'phone_call') {
+            if (call.direction === 'inbound') {
+                contactName = call.from_number || 'Unknown Caller';
+            } else if (call.direction === 'outbound') {
+                contactName = call.to_number || 'Unknown Number';
+            }
+        } else if (call.call_type === 'web_call') {
+            // Check metadata for phone number
+            if (call.metadata?.user_phone) {
+                fromNumber = call.metadata.user_phone;
+                contactName = `Web User (${fromNumber})`;
+            }
+        }
 
         const { error } = await supabase
             .from('sales_calls')
             .insert({
                 call_id: call.call_id,
                 agent_id: call.agent_id,
-                contact_name: 'Web Call User',
-                phone_number: null,
+                contact_name: contactName,
                 status: 'Active',
                 duration_seconds: 0,
                 transcript: null,
                 recording_url: null,
+                direction: call.direction || null,
+                call_type: call.call_type || null,
+                from_number: fromNumber,
+                to_number: call.to_number || null,
                 created_at: new Date(call.start_timestamp).toISOString()
             });
 
