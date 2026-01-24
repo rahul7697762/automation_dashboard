@@ -70,7 +70,7 @@ const VoiceAgentInterface = () => {
                     return;
                 }
                 try {
-                    const response = await fetch('http://localhost:3001/api/create-phone-call', {
+                    const response = await fetch('/api/create-phone-call', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ to_number: phoneNumber })
@@ -91,7 +91,7 @@ const VoiceAgentInterface = () => {
 
             try {
                 // 1. Fetch params from our local backend
-                const response = await fetch('http://localhost:3001/api/create-web-call', {
+                const response = await fetch('/api/create-web-call', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ user_phone: phoneNumber })

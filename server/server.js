@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import OpenAI from 'openai';
 
 // Load environment variables
 dotenv.config();
@@ -22,6 +23,11 @@ const API_KEY = process.env.RETELL_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Initialize OpenAI client
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+});
 
 // Endpoint to create a web call
 app.post('/api/create-web-call', async (req, res) => {
@@ -265,6 +271,230 @@ app.post('/api/webhook/retell', async (req, res) => {
 
 
 
+// Function to analyze transcript for meeting detection using OpenAI
+async function analyzeTranscriptForMeetings(transcript, callId) {
+    try {
+        if (!transcript || transcript.trim().length === 0) {
+            console.log('No transcript available for analysis');
+            return null;
+        }
+
+        console.log(`Analyzing transcript for call ${callId}...`);
+
+        const completion = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+                {
+                    role: 'system',
+                    content: `You are an AI assistant that analyzes call transcripts to detect if a meeting was scheduled.
+
+Analyze the transcript and determine:
+1. Was a meeting scheduled? (yes/no)
+2. If yes, extract:
+   - Contact person's name (the main person scheduling/attending)
+   - Contact person's phone number (if mentioned)
+   - Meeting title/purpose
+   - Date and time (convert to ISO 8601 format, assume current year if not specified)
+   - Attendees mentioned (names or roles)
+   - Location (physical address or virtual meeting link/platform)
+   - Any additional notes
+
+Respond ONLY with valid JSON in this exact format:
+{
+  "meeting_detected": boolean,
+  "meeting": {
+    "contact_name": string,
+    "contact_phone": string,
+    "title": string,
+    "description": string,
+    "scheduled_date": ISO 8601 string,
+    "attendees": string[],
+    "location": string
+  }
+}
+
+If no meeting was detected, set meeting_detected to false and meeting to null.`
+                },
+                {
+                    role: 'user',
+                    content: `Transcript:\n${transcript}`
+                }
+            ],
+            temperature: 0.3,
+            response_format: { type: 'json_object' }
+        });
+
+        const result = JSON.parse(completion.choices[0].message.content);
+        console.log('Analysis result:', result);
+
+        if (result.meeting_detected && result.meeting) {
+            // Store meeting in database
+            const { data, error } = await supabase
+                .from('meetings')
+                .insert({
+                    call_id: callId,
+                    contact_name: result.meeting.contact_name,
+                    contact_phone: result.meeting.contact_phone,
+                    title: result.meeting.title,
+                    description: result.meeting.description,
+                    scheduled_date: result.meeting.scheduled_date,
+                    attendees: result.meeting.attendees || [],
+                    location: result.meeting.location,
+                    status: 'upcoming'
+                })
+                .select()
+                .single();
+
+            if (error) {
+                console.error('Error storing meeting:', error);
+                return null;
+            }
+
+            console.log(`Meeting created: ${data.id}`);
+            return data;
+        }
+
+        return null;
+    } catch (error) {
+        console.error('Error analyzing transcript:', error);
+        return null;
+    }
+}
+
+// Endpoint to manually analyze a transcript for meetings
+app.post('/api/analyze-transcript', async (req, res) => {
+    try {
+        const { call_id } = req.body;
+
+        if (!call_id) {
+            return res.status(400).json({ error: 'call_id is required' });
+        }
+
+        // Fetch the call from database
+        const { data: call, error } = await supabase
+            .from('sales_calls')
+            .select('*')
+            .eq('call_id', call_id)
+            .single();
+
+        if (error || !call) {
+            return res.status(404).json({ error: 'Call not found' });
+        }
+
+        if (!call.transcript) {
+            return res.status(400).json({ error: 'No transcript available for this call' });
+        }
+
+        const meeting = await analyzeTranscriptForMeetings(call.transcript, call_id);
+
+        res.json({
+            success: true,
+            meeting_detected: meeting !== null,
+            meeting
+        });
+
+    } catch (error) {
+        console.error('Error in analyze-transcript endpoint:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Endpoint to get all meetings
+app.get('/api/meetings', async (req, res) => {
+    try {
+        const { start_date, end_date, status } = req.query;
+
+        let query = supabase
+            .from('meetings')
+            .select('*')
+            .order('scheduled_date', { ascending: true });
+
+        if (start_date) {
+            query = query.gte('scheduled_date', start_date);
+        }
+        if (end_date) {
+            query = query.lte('scheduled_date', end_date);
+        }
+        if (status) {
+            query = query.eq('status', status);
+        }
+
+        const { data, error } = await query;
+
+        if (error) throw error;
+
+        res.json(data);
+
+    } catch (error) {
+        console.error('Error fetching meetings:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Endpoint to get a specific meeting
+app.get('/api/meetings/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const { data, error } = await supabase
+            .from('meetings')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+        if (error) throw error;
+
+        res.json(data);
+
+    } catch (error) {
+        console.error('Error fetching meeting:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Endpoint to update a meeting
+app.put('/api/meetings/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updates = req.body;
+
+        const { data, error } = await supabase
+            .from('meetings')
+            .update(updates)
+            .eq('id', id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        res.json(data);
+
+    } catch (error) {
+        console.error('Error updating meeting:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Endpoint to delete a meeting
+app.delete('/api/meetings/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const { error } = await supabase
+            .from('meetings')
+            .delete()
+            .eq('id', id);
+
+        if (error) throw error;
+
+        res.json({ success: true });
+
+    } catch (error) {
+        console.error('Error deleting meeting:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Endpoint to sync calls from Retell
 app.get('/api/sync-calls', async (req, res) => {
     try {
@@ -426,6 +656,11 @@ async function handleCallEnded(call) {
             console.error('Error updating call in Supabase:', error);
         } else {
             console.log('Call record updated in Supabase');
+
+            // Analyze transcript for meetings if available
+            if (call.transcript) {
+                await analyzeTranscriptForMeetings(call.transcript, call.call_id);
+            }
         }
     } catch (error) {
         console.error('Error handling call ended:', error);
@@ -452,6 +687,11 @@ async function handleCallAnalyzed(call) {
             console.error('Error updating call analysis in Supabase:', error);
         } else {
             console.log('Call analysis updated in Supabase');
+
+            // Also analyze transcript for meetings if available
+            if (call.transcript) {
+                await analyzeTranscriptForMeetings(call.transcript, call.call_id);
+            }
         }
     } catch (error) {
         console.error('Error handling call analyzed:', error);

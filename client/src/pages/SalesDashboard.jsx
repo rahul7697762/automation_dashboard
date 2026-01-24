@@ -5,6 +5,7 @@ import {
     Phone,
     Clock,
     Users,
+    User,
     CheckCircle,
     Mic,
     Settings,
@@ -24,6 +25,7 @@ import {
 import VoiceAgentInterface from '../components/VoiceAgentInterface';
 import ThemeToggle from '../components/ThemeToggle';
 import AiAvatar from '../assets/ai_agent_avatar.png';
+import { meetingsService } from '../services/meetingsService';
 
 const SalesDashboard = () => {
     const navigate = useNavigate();
@@ -46,30 +48,42 @@ const SalesDashboard = () => {
     const [isSyncing, setIsSyncing] = useState(false);
     const [selectedCall, setSelectedCall] = useState(null);
     const [searchTerm, setSearchTerm] = useState('');
+    const [meetings, setMeetings] = useState([]);
+    const [loadingMeetings, setLoadingMeetings] = useState(false);
+    const [selectedMeeting, setSelectedMeeting] = useState(null);
 
     const [filterType, setFilterType] = useState('all');
     const [analyticsDate, setAnalyticsDate] = useState(new Date().toISOString().split('T')[0]);
 
     useEffect(() => {
         fetchData();
+        if (currentView === 'meetings') {
+            fetchMeetings();
+        }
 
         // Subscribe to real-time changes
         const channel = supabase
             .channel('public:sales_calls')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_calls' }, (payload) => {
                 console.log('Realtime change received!', payload);
-                fetchData(); // Refresh data on any change
+                fetchData();
             })
             .on('postgres_changes', { event: '*', schema: 'public', table: 'reminders' }, (payload) => {
                 console.log('Realtime reminder change!', payload);
                 fetchData();
+            })
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, (payload) => {
+                console.log('Realtime meeting change!', payload);
+                if (currentView === 'meetings') {
+                    fetchMeetings();
+                }
             })
             .subscribe();
 
         return () => {
             supabase.removeChannel(channel);
         };
-    }, []);
+    }, [currentView]);
 
     const fetchData = async () => {
         try {
@@ -93,6 +107,36 @@ const SalesDashboard = () => {
         } catch (error) {
             console.error('Error fetching data:', error);
             setLoading(false);
+        }
+    };
+
+    const fetchMeetings = async () => {
+        try {
+            setLoadingMeetings(true);
+            const meetingsData = await meetingsService.fetchMeetings();
+            setMeetings(meetingsData);
+            setLoadingMeetings(false);
+        } catch (error) {
+            console.error('Error fetching meetings:', error);
+            setLoadingMeetings(false);
+        }
+    };
+
+    const updateMeetingStatus = async (meetingId, newStatus) => {
+        try {
+            await meetingsService.updateMeeting(meetingId, { status: newStatus });
+
+            // Update local state
+            setMeetings(meetings.map(m =>
+                m.id === meetingId ? { ...m, status: newStatus } : m
+            ));
+
+            // Update selected meeting if it's open
+            if (selectedMeeting && selectedMeeting.id === meetingId) {
+                setSelectedMeeting({ ...selectedMeeting, status: newStatus });
+            }
+        } catch (error) {
+            console.error('Error updating meeting status:', error);
         }
     };
 
@@ -321,6 +365,12 @@ const SalesDashboard = () => {
                         active={currentView === 'analytics'}
                         onClick={() => setCurrentView('analytics')}
                     />
+                    <NavItem
+                        icon={<Calendar size={20} />}
+                        label="Meetings"
+                        active={currentView === 'meetings'}
+                        onClick={() => setCurrentView('meetings')}
+                    />
 
 
                 </nav>
@@ -337,6 +387,7 @@ const SalesDashboard = () => {
                             {currentView === 'voice_demo' && 'Live Voice Agent Demo'}
                             {currentView === 'conversations' && 'Call History & Analytics'}
                             {currentView === 'analytics' && 'Export & Analyze Daily Performance'}
+                            {currentView === 'meetings' && 'Scheduled Meetings from Calls'}
                         </p>
                     </div>
                     <div className="flex items-center gap-4">
@@ -534,7 +585,7 @@ const SalesDashboard = () => {
                                 </table>
                             </div>
                         </div>
-                    ) : (
+                    ) : currentView === 'overview' ? (
                         <>
                             {/* Metrics Grid */}
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -667,6 +718,109 @@ const SalesDashboard = () => {
                                 </div>
                             </div>
                         </>
+                    ) : null}
+
+                    {/* Meetings View */}
+                    {currentView === 'meetings' && (
+                        <div className="space-y-6">
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <h3 className="text-lg font-bold text-gray-900 dark:text-slate-100">Scheduled Meetings</h3>
+                                    <p className="text-sm text-gray-500 dark:text-slate-400">Meetings detected from call transcripts</p>
+                                </div>
+                                <button
+                                    onClick={fetchMeetings}
+                                    disabled={loadingMeetings}
+                                    className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-white hover:bg-gray-50 dark:hover:bg-slate-700 flex items-center gap-2 px-4 py-2 rounded-xl transition-colors disabled:opacity-50"
+                                >
+                                    <div className={`w-4 h-4 ${loadingMeetings ? 'animate-spin' : ''}`}>⟳</div>
+                                    <span className="font-medium">{loadingMeetings ? 'Syncing...' : 'Sync Meetings'}</span>
+                                </button>
+                            </div>
+
+                            {loadingMeetings ? (
+                                <div className="text-center py-10 text-slate-500">Loading meetings...</div>
+                            ) : meetings.length === 0 ? (
+                                <div className="bg-white dark:bg-slate-800/50 rounded-2xl p-12 text-center border border-gray-200 dark:border-slate-800">
+                                    <Calendar className="mx-auto mb-4 text-gray-400 dark:text-slate-600" size={48} />
+                                    <h3 className="text-lg font-semibold text-gray-900 dark:text-slate-200 mb-2">No Meetings Found</h3>
+                                    <p className="text-gray-500 dark:text-slate-400">Meetings will appear here when detected in call transcripts</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-6">
+                                    {(() => {
+                                        const groupedMeetings = meetings.reduce((groups, meeting) => {
+                                            const date = new Date(meeting.scheduled_date).toLocaleDateString('en-US', {
+                                                weekday: 'long',
+                                                year: 'numeric',
+                                                month: 'long',
+                                                day: 'numeric'
+                                            });
+                                            if (!groups[date]) groups[date] = [];
+                                            groups[date].push(meeting);
+                                            return groups;
+                                        }, {});
+
+                                        return Object.entries(groupedMeetings).map(([date, dayMeetings]) => (
+                                            <div key={date} className="space-y-3">
+                                                <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                                                    <Calendar size={16} />
+                                                    {date}
+                                                </h4>
+                                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                                    {dayMeetings.map((meeting) => (
+                                                        <div
+                                                            key={meeting.id}
+                                                            onClick={() => setSelectedMeeting(meeting)}
+                                                            className="bg-white dark:bg-slate-800/50 rounded-xl p-4 border border-gray-200 dark:border-slate-800 hover:border-green-500/50 transition-all cursor-pointer group"
+                                                        >
+                                                            <div className="flex justify-between items-start mb-3">
+                                                                <h5 className="font-semibold text-gray-900 dark:text-slate-100 group-hover:text-green-600 dark:group-hover:text-green-400 transition-colors">
+                                                                    {meeting.title}
+                                                                </h5>
+                                                                <span className={`px-2 py-1 rounded-md text-xs font-medium ${meeting.status === 'upcoming' ? 'bg-blue-500/10 text-blue-500 border border-blue-500/20' :
+                                                                    meeting.status === 'completed' ? 'bg-green-500/10 text-green-500 border border-green-500/20' :
+                                                                        'bg-gray-500/10 text-gray-500 border border-gray-500/20'
+                                                                    }`}>
+                                                                    {meeting.status}
+                                                                </span>
+                                                            </div>
+                                                            <div className="space-y-2 text-sm">
+                                                                {meeting.contact_name && (
+                                                                    <div className="flex items-center gap-2 text-gray-900 dark:text-slate-200 font-medium">
+                                                                        <User size={14} />
+                                                                        <span>{meeting.contact_name}</span>
+                                                                        {meeting.contact_phone && (
+                                                                            <span className="text-gray-500 dark:text-slate-400">• {meeting.contact_phone}</span>
+                                                                        )}
+                                                                    </div>
+                                                                )}
+                                                                <div className="flex items-center gap-2 text-gray-600 dark:text-slate-400">
+                                                                    <Clock size={14} />
+                                                                    <span>{new Date(meeting.scheduled_date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</span>
+                                                                </div>
+                                                                {meeting.location && (
+                                                                    <div className="flex items-center gap-2 text-gray-600 dark:text-slate-400">
+                                                                        <span>📍</span>
+                                                                        <span className="truncate">{meeting.location}</span>
+                                                                    </div>
+                                                                )}
+                                                                {meeting.attendees && meeting.attendees.length > 0 && (
+                                                                    <div className="flex items-center gap-2 text-gray-600 dark:text-slate-400">
+                                                                        <Users size={14} />
+                                                                        <span>{meeting.attendees.length} attendee{meeting.attendees.length > 1 ? 's' : ''}</span>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ));
+                                    })()}
+                                </div>
+                            )}
+                        </div>
                     )}
                 </div>
 
@@ -788,6 +942,138 @@ const SalesDashboard = () => {
                             </div>
                         </div>
                     </div >
+                )}
+
+                {/* Meeting Details Modal */}
+                {selectedMeeting && (
+                    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setSelectedMeeting(null)}>
+                        <div className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+                            <div className="p-6 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-800/50">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">{selectedMeeting.title}</h3>
+                                        <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-slate-400">
+                                            <span className="flex items-center gap-1">
+                                                <Calendar size={14} />
+                                                {new Date(selectedMeeting.scheduled_date).toLocaleDateString('en-US', {
+                                                    weekday: 'long',
+                                                    year: 'numeric',
+                                                    month: 'long',
+                                                    day: 'numeric'
+                                                })}
+                                            </span>
+                                            <span>•</span>
+                                            <span className="flex items-center gap-1">
+                                                <Clock size={14} />
+                                                {new Date(selectedMeeting.scheduled_date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <button onClick={() => setSelectedMeeting(null)} className="text-gray-400 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white p-2 rounded-full hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="flex-1 overflow-auto p-6 space-y-4">
+                                {(selectedMeeting.contact_name || selectedMeeting.contact_phone) && (
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-2">Contact Person</h4>
+                                        <div className="flex items-center gap-3">
+                                            {selectedMeeting.contact_name && (
+                                                <span className="text-gray-900 dark:text-slate-100 font-medium flex items-center gap-2">
+                                                    <User size={16} />
+                                                    {selectedMeeting.contact_name}
+                                                </span>
+                                            )}
+                                            {selectedMeeting.contact_phone && (
+                                                <span className="text-gray-700 dark:text-slate-300 flex items-center gap-2">
+                                                    <Phone size={16} />
+                                                    {selectedMeeting.contact_phone}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {selectedMeeting.description && (
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-2">Description</h4>
+                                        <p className="text-gray-700 dark:text-slate-300">{selectedMeeting.description}</p>
+                                    </div>
+                                )}
+
+                                {selectedMeeting.location && (
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-2">Location</h4>
+                                        <p className="text-gray-700 dark:text-slate-300 flex items-center gap-2">
+                                            <span>📍</span>
+                                            {selectedMeeting.location}
+                                        </p>
+                                    </div>
+                                )}
+
+                                {selectedMeeting.attendees && selectedMeeting.attendees.length > 0 && (
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-2">Attendees</h4>
+                                        <div className="flex flex-wrap gap-2">
+                                            {selectedMeeting.attendees.map((attendee, idx) => (
+                                                <span key={idx} className="px-3 py-1 bg-gray-100 dark:bg-slate-800 rounded-full text-sm text-gray-700 dark:text-slate-300">
+                                                    {attendee}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div>
+                                    <h4 className="text-sm font-semibold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-2">Status</h4>
+                                    <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${selectedMeeting.status === 'upcoming' ? 'bg-blue-500/10 text-blue-500 border border-blue-500/20' :
+                                        selectedMeeting.status === 'completed' ? 'bg-green-500/10 text-green-500 border border-green-500/20' :
+                                            'bg-gray-500/10 text-gray-500 border border-gray-500/20'
+                                        }`}>
+                                        {selectedMeeting.status}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="p-4 border-t border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-800/50 flex justify-between items-center gap-2">
+                                <div className="flex gap-2">
+                                    {selectedMeeting.status !== 'completed' && (
+                                        <button
+                                            onClick={() => updateMeetingStatus(selectedMeeting.id, 'completed')}
+                                            className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors font-medium text-sm flex items-center gap-2"
+                                        >
+                                            <CheckCircle size={16} />
+                                            Mark Completed
+                                        </button>
+                                    )}
+                                    {selectedMeeting.status !== 'upcoming' && (
+                                        <button
+                                            onClick={() => updateMeetingStatus(selectedMeeting.id, 'upcoming')}
+                                            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors font-medium text-sm"
+                                        >
+                                            Mark Upcoming
+                                        </button>
+                                    )}
+                                    {selectedMeeting.status !== 'cancelled' && (
+                                        <button
+                                            onClick={() => updateMeetingStatus(selectedMeeting.id, 'cancelled')}
+                                            className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg transition-colors font-medium text-sm"
+                                        >
+                                            Mark Cancelled
+                                        </button>
+                                    )}
+                                </div>
+                                <button
+                                    onClick={() => setSelectedMeeting(null)}
+                                    className="px-4 py-2 bg-gray-200 dark:bg-slate-700 hover:bg-gray-300 dark:hover:bg-slate-600 text-gray-900 dark:text-white rounded-lg transition-colors font-medium text-sm"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 )}
             </main >
         </div >
