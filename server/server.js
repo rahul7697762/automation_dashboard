@@ -6,6 +6,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
+import { google } from 'googleapis';
+import axios from 'axios';
+import { encryptData, decryptData } from './utils/encryption.js';
 
 // Load environment variables
 dotenv.config();
@@ -16,6 +19,15 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+// Debug logging middleware
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    if (Object.keys(req.body).length > 0) {
+        console.log('Request Body:', JSON.stringify(req.body, null, 2));
+    }
+    next();
+});
 
 const API_KEY = process.env.RETELL_API_KEY;
 
@@ -239,6 +251,669 @@ app.get('/api/call/:callId', async (req, res) => {
     }
 });
 
+const lengthMapping = {
+    "Short (300-500 words)": 300,
+    "Medium (500-1000 words)": 500,
+    "Long (1000-2000 words)": 1000,
+};
+
+function formatBlogToHTML(blogText) {
+    return blogText
+        .replace(/^# (.+)$/gm, '<h1>$1</h1>') // Handle H1 just in case
+        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+        .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+        // Convert bold lines to H3 if they look like headers (standalone line)
+        .replace(/^\*\*(.+?)\*\*$/gm, '<h3>$1</h3>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/\n{2,}/g, '</p><p>')
+        .replace(/^/, '<p>')
+        .concat('</p>');
+}
+
+// Endpoint to generate SEO Article
+app.post('/api/articles/generate', async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith("Bearer ")) {
+            return res.status(401).json({ error: "Unauthorized" });
+        }
+
+        const token = authHeader.replace("Bearer ", "").trim();
+
+        // Verify Supabase Token
+        const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+
+        if (authError || !user) {
+            console.warn("Token verification failed:", authError?.message);
+            return res.status(401).json({ error: "Invalid token" });
+        }
+
+        const {
+            topic,
+            keywords = "",
+            language = "English",
+            style = "conversational",
+            length = "Medium (500-1000 words)",
+            audience = "general public",
+            variants: rawVariants = 1,
+        } = req.body;
+
+        const userId = user.id;
+        const variants = parseInt(rawVariants) || 1;
+
+        // Validations
+
+        const lengthNum = lengthMapping[length] || 500;
+
+        // --------- KEYWORD RESEARCH ---------
+        let generatedKeywords = keywords;
+        if (!keywords.trim()) {
+            const keywordPrompt = `Generate relevant keywords for "${topic}" as comma-separated list.`;
+            const keywordResponse = await axios.post(
+                "https://api.perplexity.ai/chat/completions",
+                {
+                    model: "sonar-pro",
+                    messages: [
+                        { role: "system", content: "You are an SEO expert." },
+                        { role: "user", content: keywordPrompt },
+                    ],
+                    max_tokens: 500,
+                    n: 1,
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY}`,
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+            generatedKeywords = keywordResponse.data.choices?.[0]?.message?.content || "";
+        }
+
+        // --------- BLOG GENERATION ---------
+        let blogText = "";
+        let attempts = 0;
+        const maxAttempts = 3;
+        let wordCount = 0;
+
+        while (wordCount < lengthNum && attempts < maxAttempts) {
+            attempts++;
+            const prompt = `Write an engaging blog for ${audience} in ${language} on "${topic}". Include keywords: ${generatedKeywords || "none"}. Use ${style} style. Ensure at least ${lengthNum} words. 
+
+FORMATTING RULES:
+- Use Markdown headers for sections (e.g., ## Section Title).
+- Use ### for sub-sections.
+- Do NOT use # for the main title (it will be added separately).
+- Use **bold** for emphasis.
+- Do NOT use [1], [2] citations. Insert valid external references as clickable HTML links (<a href="..." target="_blank">text</a>).
+
+Content:`;
+            const blogResponse = await axios.post(
+                "https://api.perplexity.ai/chat/completions",
+                {
+                    model: "sonar-pro",
+                    messages: [
+                        { role: "system", content: "You are an expert content writer. Always use Markdown headers (##, ###) for structure." },
+                        { role: "user", content: prompt },
+                    ],
+                    max_tokens: 4000,
+                    n: variants,
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY}`,
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+
+            blogText += "\n\n" + (blogResponse.data.choices?.[0]?.message?.content || "");
+            wordCount = blogText.split(/\s+/).length;
+        }
+
+        // --------- AI SEO TITLE GENERATION ---------
+        let seoTitle = "";
+        try {
+            const titlePrompt = `Based on this blog content, generate the best SEO-friendly title (max 60 characters) that is catchy and optimized for search engines:
+
+  ${blogText.substring(0, 1200)}
+  
+  Topic: ${topic}
+
+  Return only the title, nothing else.`;
+
+            const titleResponse = await axios.post(
+                "https://api.perplexity.ai/chat/completions",
+                {
+                    model: "sonar-pro",
+                    messages: [
+                        { role: "system", content: "You are an expert SEO copywriter." },
+                        { role: "user", content: titlePrompt },
+                    ],
+                    max_tokens: 50,
+                    n: 1,
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY}`,
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+
+            seoTitle = titleResponse.data.choices?.[0]?.message?.content?.trim() || topic;
+
+        } catch (err) {
+            console.error("SEO title generation failed:", err.message);
+            seoTitle = topic; // fallback
+        }
+
+        // --------- PLAGIARISM CHECK ---------
+        let plagiarismPrompt = `Check for plagiarism in this article. Reply "No plagiarism detected" if original, otherwise summarize detected parts:\n\n${blogText}`;
+        let plagiarismResponse = await axios.post(
+            "https://api.perplexity.ai/chat/completions",
+            {
+                model: "sonar-pro",
+                messages: [
+                    { role: "system", content: "You are a plagiarism checker." },
+                    { role: "user", content: plagiarismPrompt },
+                ],
+                max_tokens: 500,
+                n: 1,
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY}`,
+                    "Content-Type": "application/json",
+                },
+            }
+        );
+
+        let plagiarismResult = plagiarismResponse.data.choices?.[0]?.message?.content || "No plagiarism detected";
+
+        if (!plagiarismResult.toLowerCase().includes("no plagiarism")) {
+            plagiarismResult += " ⚠️ Could not fully eliminate plagiarism, but the article is returned to user.";
+        }
+
+        // --------- AI GENERATES SUITABLE TEXT FOR IMAGE ---------
+        let imageUrl = "";
+        let imageText = "";
+
+        try {
+            // Step 1: Let AI generate suitable text for the image based on blog content
+            const textPrompt = `Based on this blog content, create a short, simplest, small and catchy headline or phrase (maximum 3 words) that would look good on a blog header image. Make it engaging and relevant to the content:
+
+${blogText.substring(0, 1000)}
+
+Topic: ${topic}
+
+Return only the headline text, nothing else.`;
+
+            const textResponse = await axios.post(
+                "https://api.perplexity.ai/chat/completions",
+                {
+                    model: "sonar-pro",
+                    messages: [
+                        { role: "system", content: "You are a marketing copywriter expert at creating catchy headlines." },
+                        { role: "user", content: textPrompt },
+                    ],
+                    max_tokens: 100,
+                    n: 1,
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY}`,
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+
+            imageText = textResponse.data.choices?.[0]?.message?.content?.trim() || topic;
+
+            // Clean up the generated text (remove quotes, extra punctuation)
+            imageText = imageText.replace(/^["']|["']$/g, '').replace(/[^\w\s-]/g, '').trim();
+
+            console.log("AI-generated image text:", imageText);
+            const backgroundPrompt = `Create a professional blog header image about: ${topic}.
+
+VISUAL REQUIREMENTS:
+- High-quality, modern design with relevant visual elements
+- Blog header format (landscape orientation, 16:9 ratio)
+- Clean, professional appearance suitable for publication
+
+TEXT OVERLAY REQUIREMENTS:
+- Include the exact text: "${imageText}"
+- Text must be spelled EXACTLY as written above, character by character
+- Place text prominently, readable, and well-positioned on the image
+- Use clean, modern typography (sans-serif font recommended)
+
+CRITICAL: The text "${imageText}" must appear exactly as written, with perfect spelling and clear visibility.`;
+            const imageResponse = await axios.post(
+                "https://api.openai.com/v1/images/generations",
+                {
+                    model: "dall-e-3",
+                    prompt: backgroundPrompt,
+                    n: 1,
+                    size: "1792x1024",
+                    response_format: "url"
+                },
+                {
+                    headers: {
+                        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+
+            const backgroundUrl = imageResponse.data.data[0]?.url;
+
+            if (backgroundUrl) {
+                imageUrl = backgroundUrl;
+            } else {
+                throw new Error("No background image generated");
+            }
+
+        } catch (error) {
+            console.error("AI text/image generation failed:", error.message);
+
+            // Fallback: use topic as text and generate simple image
+            imageText = topic;
+            const encodedText = encodeURIComponent(imageText.substring(0, 50));
+            imageUrl = `https://via.placeholder.com/1792x1024/2563eb/ffffff?text=${encodedText}`;
+        }
+
+        // --------- FORMAT AND SAVE ---------
+        const blogHTML = formatBlogToHTML(blogText);
+
+        // Save to Supabase 'articles' table
+        const { data: insertedData, error: insertError } = await supabase
+            .from('articles')
+            .insert([{
+                user_id: userId,
+                topic,
+                keywords: generatedKeywords,
+                content: blogHTML, // Mapped 'article' to 'content' to match typical schema
+                image_url: imageUrl,
+                seo_title: seoTitle,
+            }])
+            .select()
+            .single();
+
+        if (insertError) {
+            throw new Error(`Supabase insert error: ${insertError.message}`);
+        }
+
+        // Response
+        res.status(200).json({
+            success: true,
+            id: insertedData.id,
+            article: blogHTML,
+            imageUrl,
+            wordCount,
+            seoTitle,
+            plagiarismCheck: plagiarismResult,
+        });
+
+    } catch (error) {
+        console.error("API error:", error.response?.data || error.message);
+        res.status(500).json({ error: "Internal Server Error", details: error.message });
+    }
+});
+
+app.post('/api/upload-to-wordpress', async (req, res) => {
+    try {
+        const { wpUrl, wpUser, wpPassword, title, content, imageUrl } = req.body;
+
+        if (!wpUrl || !wpUser || !wpPassword || !title || !content) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields'
+            });
+        }
+
+        console.log('Uploading to WordPress:', wpUrl);
+
+        // WordPress REST API URL
+        const wpApiUrl = `${wpUrl.replace(/\/+$/, '')}/wp-json/wp/v2/posts`;
+        const authHeader = 'Basic ' + Buffer.from(`${wpUser}:${wpPassword}`).toString('base64');
+
+        // Create post data
+        const postData = {
+            title: title,
+            content: content,
+            status: 'draft', // Create as draft for review
+            excerpt: content.substring(0, 200).replace(/<[^>]*>/g, ''), // Extract plain text for excerpt
+        };
+
+        // Create WordPress post
+        const response = await fetch(wpApiUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': authHeader,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(postData)
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`WordPress API error: ${response.status} - ${errorText.substring(0, 200)}`);
+        }
+
+        const postResult = await response.json();
+        console.log('Post created on WordPress:', postResult.link);
+
+        res.json({
+            success: true,
+            link: postResult.link,
+            postId: postResult.id
+        });
+
+    } catch (error) {
+        console.error('Error uploading to WordPress:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Google Sheets Endpoint for WordPress Article Tracking
+app.post('/api/add-to-google-sheet', async (req, res) => {
+    try {
+        const { niche, keywords, title, wordpressUrl, userId } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                error: 'User ID is required'
+            });
+        }
+
+        console.log('📊 Adding to Google Sheets:', { niche, keywords, title, userId });
+
+        // Fetch user's Google Sheets credentials from database
+        const { data: settings, error: settingsError } = await supabase
+            .from('user_settings')
+            .select('*')
+            .eq('user_id', userId)
+            .single();
+
+        if (settingsError || !settings) {
+            console.log('❌ Google Sheets not configured for user');
+            return res.status(400).json({
+                success: false,
+                error: 'Google Sheets not configured. Please add your credentials in Settings.'
+            });
+        }
+
+        if (!settings.google_sheet_id || !settings.google_service_email || !settings.google_private_key) {
+            return res.status(400).json({
+                success: false,
+                error: 'Incomplete Google Sheets configuration. Please check your Settings.'
+            });
+        }
+
+        // Decrypt the private key
+        const privateKey = decryptData(settings.google_private_key);
+
+        // Initialize Google Sheets API with user's credentials
+        const auth = new google.auth.GoogleAuth({
+            credentials: {
+                client_email: settings.google_service_email,
+                private_key: privateKey.replace(/\\n/g, '\n'),
+            },
+            scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+        });
+
+        const sheets = google.sheets({ version: 'v4', auth });
+
+        // Prepare the row data: Niche | Keywords | Titles
+        const values = [[niche, keywords, title]];
+
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: settings.google_sheet_id,
+            range: 'Sheet1!A:C', // Niche, Keywords, Titles
+            valueInputOption: 'USER_ENTERED',
+            requestBody: {
+                values,
+            },
+        });
+
+        console.log('✅ Successfully added to user Google Sheet');
+
+        res.json({
+            success: true,
+            message: 'Data successfully added to your Google Sheet',
+        });
+
+    } catch (error) {
+        console.error('❌ Error adding to Google Sheets:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// ========== CREDIT SYSTEM ENDPOINTS ==========
+
+// Get User Credits
+app.get('/api/credits/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        const { data, error } = await supabase
+            .from('user_credits')
+            .select('balance')
+            .eq('user_id', userId)
+            .single();
+
+        if (error) throw error;
+
+        res.json({ success: true, balance: data?.balance || 0 });
+    } catch (error) {
+        // If row doesn't exist yet, return 0 (or create it logic if we want)
+        // For new users, trigger should have created it.
+        console.error('Error fetching credits:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Deduct Credits
+app.post('/api/credits/deduct', async (req, res) => {
+    try {
+        const { userId, amount, action } = req.body;
+
+        if (!userId || !amount) {
+            return res.status(400).json({ success: false, error: 'User ID and amount required' });
+        }
+
+        // 1. Check current balance
+        const { data: currentData, error: fetchError } = await supabase
+            .from('user_credits')
+            .select('balance')
+            .eq('user_id', userId)
+            .single();
+
+        if (fetchError && fetchError.code !== 'PGRST116') throw fetchError;
+
+        const currentBalance = currentData?.balance || 0;
+
+        if (currentBalance < amount) {
+            return res.status(400).json({
+                success: false,
+                error: 'Insufficient credits',
+                currentBalance
+            });
+        }
+
+        // 2. Deduct credits
+        const { data: updatedData, error: updateError } = await supabase
+            .from('user_credits')
+            .update({
+                balance: currentBalance - amount,
+                updated_at: new Date().toISOString()
+            })
+            .eq('user_id', userId)
+            .select() // return updated row
+            .single();
+
+        if (updateError) throw updateError;
+
+        console.log(`💰 Deducted ${amount} credits from user ${userId} for ${action}. New balance: ${updatedData.balance}`);
+
+        res.json({
+            success: true,
+            message: 'Credits deducted successfully',
+            newBalance: updatedData.balance
+        });
+
+    } catch (error) {
+        console.error('Error deducting credits:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ========== USER SETTINGS ENDPOINTS ==========
+
+// Save/Update User Google Sheets Settings
+app.post('/api/user/settings', async (req, res) => {
+    try {
+        const { userId, googleSheetId, googleServiceEmail, googlePrivateKey } = req.body;
+
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                error: 'User ID is required'
+            });
+        }
+
+        console.log(`💾 Saving Google Sheets settings for user: ${userId}`);
+
+        // Encrypt the private key before storing
+        const encryptedKey = googlePrivateKey ? encryptData(googlePrivateKey) : null;
+
+        // Upsert settings to Supabase
+        const { data, error } = await supabase
+            .from('user_settings')
+            .upsert({
+                user_id: userId,
+                google_sheet_id: googleSheetId || null,
+                google_service_email: googleServiceEmail || null,
+                google_private_key: encryptedKey,
+                updated_at: new Date().toISOString()
+            }, {
+                onConflict: 'user_id'
+            })
+            .select();
+
+        if (error) {
+            console.error('❌ Error saving user settings:', error);
+            return res.status(500).json({
+                success: false,
+                error: error.message
+            });
+        }
+
+        console.log('✅ User settings saved successfully');
+
+        res.json({
+            success: true,
+            message: 'Google Sheets settings saved successfully'
+        });
+
+    } catch (error) {
+        console.error('❌ Error in save settings endpoint:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Get User Google Sheets Settings
+app.get('/api/user/settings/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        console.log(`📖 Fetching settings for user: ${userId}`);
+
+        const { data, error } = await supabase
+            .from('user_settings')
+            .select('google_sheet_id, google_service_email, google_private_key')
+            .eq('user_id', userId)
+            .single();
+
+        if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+            console.error('❌ Error fetching user settings:', error);
+            return res.status(500).json({
+                success: false,
+                error: error.message
+            });
+        }
+
+        if (!data) {
+            return res.json({
+                success: true,
+                configured: false
+            });
+        }
+
+        // Don't send back the private key, just confirm it exists
+        res.json({
+            success: true,
+            configured: true,
+            googleSheetId: data.google_sheet_id,
+            googleServiceEmail: data.google_service_email,
+            hasPrivateKey: !!data.google_private_key
+        });
+
+    } catch (error) {
+        console.error('❌ Error in get settings endpoint:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Delete User Google Sheets Settings
+app.delete('/api/user/settings/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+
+        console.log(`🗑️ Deleting settings for user: ${userId}`);
+
+        const { error } = await supabase
+            .from('user_settings')
+            .delete()
+            .eq('user_id', userId);
+
+        if (error) {
+            console.error('❌ Error deleting user settings:', error);
+            return res.status(500).json({
+                success: false,
+                error: error.message
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Settings deleted successfully'
+        });
+
+    } catch (error) {
+        console.error('❌ Error in delete settings endpoint:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
 // Webhook endpoint to receive Retell AI events
 app.post('/api/webhook/retell', async (req, res) => {
     try {
@@ -271,7 +946,7 @@ app.post('/api/webhook/retell', async (req, res) => {
 
 
 
-// Function to analyze transcript for meeting detection using OpenAI
+// Function to analyze transcript for meetings detection using OpenAI
 async function analyzeTranscriptForMeetings(transcript, callId) {
     try {
         if (!transcript || transcript.trim().length === 0) {

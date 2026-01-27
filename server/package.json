@@ -2,17 +2,20 @@
     "name": "voice-agent-server",
     "version": "1.0.0",
     "description": "Backend for Retell AI Voice Agent",
-    "main": "server.js",
+    "main": "src/index.js",
     "type": "module",
     "scripts": {
-        "start": "node server.js",
-        "dev": "node --watch server.js"
+        "start": "node src/index.js",
+        "dev": "node --watch -r dotenv/config src/index.js"
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.39.0",
+        "axios": "^1.13.3",
         "cors": "^2.8.5",
         "dotenv": "^17.2.3",
         "express": "^4.21.2",
+        "firebase-admin": "^13.6.0",
+        "googleapis": "^170.1.0",
         "openai": "^6.16.0"
     }
 }

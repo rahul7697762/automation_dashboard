@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import Logo from '../assets/logo.webp';
 import ThemeToggle from './ThemeToggle';
 
 const Navbar = () => {
     const [scrolled, setScrolled] = useState(false);
     const location = useLocation();
+    const { user, credits, signOut } = useAuth();
 
     useEffect(() => {
         const handleScroll = () => {
@@ -19,6 +21,7 @@ const Navbar = () => {
         { name: 'Home', path: '/' },
         { name: 'Agents', path: '/agents' },
         { name: 'Broadcast', path: '/broadcast' },
+        { name: 'Blogs', path: '/blogs' },
     ];
 
     return (
@@ -59,11 +62,38 @@ const Navbar = () => {
                     ))}
                     <div className="pl-4 border-l border-gray-200 dark:border-gray-700 flex items-center gap-4">
                         <ThemeToggle />
-                        <Link to="/agents">
-                            <button className="px-5 py-2.5 rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-sm font-semibold hover:bg-slate-800 dark:hover:bg-gray-100 transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
-                                Launch App
-                            </button>
-                        </Link>
+
+                        {user ? (
+                            <div className="flex items-center gap-4">
+                                <div className="bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1.5 rounded-lg border border-indigo-100 dark:border-indigo-800">
+                                    <span className="text-sm font-semibold text-indigo-700 dark:text-indigo-300">
+                                        💎 {credits} Credits
+                                    </span>
+                                </div>
+                                <div className="relative group">
+                                    <span className="text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                                        {user.email?.split('@')[0]}
+                                    </span>
+                                </div>
+                                <button
+                                    onClick={signOut}
+                                    className="text-sm text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 font-medium transition-colors"
+                                >
+                                    Logout
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-3">
+                                <Link to="/login" className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400">
+                                    Login
+                                </Link>
+                                <Link to="/signup">
+                                    <button className="px-5 py-2.5 rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-sm font-semibold hover:bg-slate-800 dark:hover:bg-gray-100 transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
+                                        Get Started
+                                    </button>
+                                </Link>
+                            </div>
+                        )}
                     </div>
                 </div>
 
