@@ -3,6 +3,10 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dns from 'dns';
+
+// Force IPv4 to avoid Supabase connection timeouts
+dns.setDefaultResultOrder('ipv4first');
 
 // Load env vars
 dotenv.config();
