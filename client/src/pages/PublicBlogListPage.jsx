@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import BlogCard from '../components/BlogCard';
 import SEOHead from '../components/SEOHead';
 import { Search, Loader2 } from 'lucide-react';
+import API_BASE_URL from '../config.js';
 
 const PublicBlogListPage = () => {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -27,7 +28,7 @@ const PublicBlogListPage = () => {
     const fetchArticles = async (page) => {
         try {
             setLoading(true);
-            const response = await fetch(`http://localhost:3001/api/public/blogs?page=${page}&limit=9&sort=created_at&order=desc`);
+            const response = await fetch(`${API_BASE_URL}/api/public/blogs?page=${page}&limit=9&sort=created_at&order=desc`);
             const data = await response.json();
 
             if (data.success) {

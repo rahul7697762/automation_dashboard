@@ -5,6 +5,7 @@ import { supabase } from '../services/supabaseClient';
 import { ArrowLeft, Plus, Upload, Trash2, Eye, RefreshCw, Home, LayoutDashboard, Bot, Radio, FileText } from 'lucide-react';
 import ThemeToggle from '../components/ThemeToggle';
 import blogService from '../services/blogService';
+import API_BASE_URL from '../config.js';
 
 const BlogPage = () => {
     const { user, credits } = useAuth();
@@ -84,7 +85,7 @@ const BlogPage = () => {
             const { data: { session } } = await supabase.auth.getSession();
             const token = session?.access_token;
 
-            const response = await fetch('http://localhost:3001/api/articles/generate', {
+            const response = await fetch(`${API_BASE_URL}/api/articles/generate`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -105,7 +106,7 @@ const BlogPage = () => {
             if (data.success) {
                 // Deduct credits
                 try {
-                    await fetch('http://localhost:3001/api/credits/deduct', {
+                    await fetch(`${API_BASE_URL}/api/credits/deduct`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -129,7 +130,7 @@ const BlogPage = () => {
                     try {
                         // 1. Upload to WordPress
                         console.log('Uploading to WordPress...');
-                        const wpResponse = await fetch('http://localhost:3001/api/upload-to-wordpress', {
+                        const wpResponse = await fetch(`${API_BASE_URL}/api/upload-to-wordpress`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -152,7 +153,7 @@ const BlogPage = () => {
                         }
 
                         // 2. Send to Google Sheets for tracking
-                        await fetch('http://localhost:3001/api/add-to-google-sheet', {
+                        await fetch(`${API_BASE_URL}/api/add-to-google-sheet`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -220,7 +221,7 @@ const BlogPage = () => {
 
         setIsUploading(true);
         try {
-            const response = await fetch('http://localhost:3001/api/upload-to-wordpress', {
+            const response = await fetch(`${API_BASE_URL}/api/upload-to-wordpress`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

@@ -26,6 +26,7 @@ import VoiceAgentInterface from '../components/VoiceAgentInterface';
 import ThemeToggle from '../components/ThemeToggle';
 import AiAvatar from '../assets/ai_agent_avatar.png';
 import { meetingsService } from '../services/meetingsService';
+import API_BASE_URL from '../config.js';
 
 const SalesDashboard = () => {
     const navigate = useNavigate();
@@ -235,7 +236,7 @@ const SalesDashboard = () => {
         }
         setIsCalling(true);
         try {
-            const response = await fetch('http://localhost:3001/api/create-phone-call', {
+            const response = await fetch(`${API_BASE_URL}/api/create-phone-call`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ to_number: phoneNumber })
@@ -256,7 +257,7 @@ const SalesDashboard = () => {
     const handleSyncCalls = async () => {
         setIsSyncing(true);
         try {
-            const response = await fetch('http://localhost:3001/api/sync-calls');
+            const response = await fetch(`${API_BASE_URL}/api/sync-calls`);
             const data = await response.json();
             if (data.error) throw new Error(data.error);
 

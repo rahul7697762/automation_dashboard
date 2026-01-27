@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import SEOHead from '../components/SEOHead';
 import { Loader2, ArrowLeft, Calendar, User, Clock, Share2 } from 'lucide-react';
+import API_BASE_URL from '../config.js';
 
 const PublicArticlePage = () => {
     const { id } = useParams();
@@ -17,7 +18,7 @@ const PublicArticlePage = () => {
     const fetchArticle = async () => {
         try {
             setLoading(true);
-            const response = await fetch(`http://localhost:3001/api/public/blogs/${id}`);
+            const response = await fetch(`${API_BASE_URL}/api/public/blogs/${id}`);
             const data = await response.json();
 
             if (data.success) {

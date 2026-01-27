@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import ThemeToggle from '../components/ThemeToggle';
 import blogService from '../services/blogService';
+import API_BASE_URL from '../config.js';
 
 const SeoAgentPage = () => {
     const navigate = useNavigate();
@@ -113,7 +114,7 @@ const SeoAgentPage = () => {
             const { data: { session } } = await supabase.auth.getSession();
             const token = session?.access_token;
 
-            const response = await fetch('http://localhost:3001/api/articles/generate', {
+            const response = await fetch(`${API_BASE_URL}/api/articles/generate`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -127,7 +128,7 @@ const SeoAgentPage = () => {
             if (data.success) {
                 // Deduct credits
                 try {
-                    await fetch('http://localhost:3001/api/credits/deduct', {
+                    await fetch(`${API_BASE_URL}/api/credits/deduct`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -146,7 +147,7 @@ const SeoAgentPage = () => {
                     try {
                         // Upload to WordPress
                         console.log('Uploading to WordPress...');
-                        const wpResponse = await fetch('http://localhost:3001/api/upload-to-wordpress', {
+                        const wpResponse = await fetch(`${API_BASE_URL}/api/upload-to-wordpress`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -169,7 +170,7 @@ const SeoAgentPage = () => {
                         }
 
                         // Send to Google Sheets for tracking
-                        await fetch('http://localhost:3001/api/add-to-google-sheet', {
+                        await fetch(`${API_BASE_URL}/api/add-to-google-sheet`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
@@ -239,7 +240,7 @@ const SeoAgentPage = () => {
 
         setIsUploading(true);
         try {
-            const response = await fetch('http://localhost:3001/api/upload-to-wordpress', {
+            const response = await fetch(`${API_BASE_URL}/api/upload-to-wordpress`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

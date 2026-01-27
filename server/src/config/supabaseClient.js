@@ -5,6 +5,8 @@ dotenv.config();
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
+console.log('🔹 initializing Supabase Client with URL:', SUPABASE_URL);
+
 if (!SUPABASE_URL || !SUPABASE_KEY) {
     console.error('Missing Supabase URL or Key in environment variables');
 }
