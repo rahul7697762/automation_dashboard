@@ -236,11 +236,30 @@ const SalesDashboard = () => {
         }
         setIsCalling(true);
         try {
-            const response = await fetch(`${API_BASE_URL}/api/create-phone-call`, {
+            const url = `${API_BASE_URL}/api/create-phone-call`;
+            console.log('Making call to:', url);
+
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ to_number: phoneNumber })
             });
+
+            if (!response.ok) {
+                const contentType = response.headers.get('content-type');
+                let errorMessage = `Server returned ${response.status} ${response.statusText}`;
+                
+                if (contentType && contentType.includes('application/json')) {
+                    const errorData = await response.json();
+                    errorMessage = errorData.error || errorMessage;
+                } else {
+                    const errorText = await response.text();
+                    console.error('Non-JSON response:', errorText.substring(0, 200));
+                    errorMessage += ' (Non-JSON response)';
+                }
+                throw new Error(errorMessage);
+            }
+
             const data = await response.json();
             if (data.error) throw new Error(data.error);
 

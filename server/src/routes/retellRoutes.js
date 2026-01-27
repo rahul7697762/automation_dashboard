@@ -1,9 +1,10 @@
 import express from 'express';
-import { createWebCall, handleWebhook, syncCalls } from '../controllers/retellController.js';
+import { createWebCall, createPhoneCall, handleWebhook, syncCalls } from '../controllers/retellController.js';
 
 const router = express.Router();
 
 router.post('/create-web-call', createWebCall);
+router.post('/create-phone-call', createPhoneCall);
 router.post('/webhook/retell', handleWebhook);
 router.get('/sync-calls', syncCalls);
 
