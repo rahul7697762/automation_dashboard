@@ -5,6 +5,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dns from 'dns';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // Force IPv4 to avoid Supabase connection timeouts
 dns.setDefaultResultOrder('ipv4first');
 
@@ -43,6 +46,15 @@ app.use('/api/add-to-google-sheet', googleSheetsRoutes);
 // Health check
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date() });
+});
+
+// Serve static files from the client build directory
+const clientBuildPath = path.join(__dirname, '../../client/dist');
+app.use(express.static(clientBuildPath));
+
+// Handle React routing, return all requests to React app
+app.get('*', (req, res) => {
+    res.sendFile(path.join(clientBuildPath, 'index.html'));
 });
 
 // Start server

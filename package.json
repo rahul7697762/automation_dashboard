@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "description": "Retell AI Voice Agent Dashboard",
     "scripts": {
-        "start": "node server/server.js",
+        "start": "node server/src/index.js",
         "build": "npm install && npm install --prefix client && npm run build --prefix client && npm install --prefix server"
     },
     "engines": {
